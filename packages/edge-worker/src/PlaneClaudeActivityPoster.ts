@@ -14,6 +14,7 @@
  */
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createLogger, type ILogger } from "cyrus-core";
+import { escapeHtml } from "./plane-html-utils.js";
 
 const TOOL_INPUT_PREVIEW_MAX = 2000;
 const TOOL_RESULT_PREVIEW_MAX = 500;
@@ -184,13 +185,4 @@ function renderToolResultPreview(content: unknown): string {
 			: text;
 	}
 	return "";
-}
-
-function escapeHtml(s: string): string {
-	return s
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#39;");
 }

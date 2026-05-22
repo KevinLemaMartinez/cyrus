@@ -27,6 +27,7 @@ import type {
 } from "cyrus-plane-event-transport";
 import type { GitService } from "./GitService.js";
 import { PlaneClaudeActivityPoster } from "./PlaneClaudeActivityPoster.js";
+import { escapeHtml } from "./plane-html-utils.js";
 
 export type ClaudeRunnerHandle = EventEmitter & {
 	start: (prompt: string) => Promise<unknown>;
@@ -126,16 +127,14 @@ export class PlaneSessionRunner {
 		runnerHandle.on("message", (m: SDKMessage) => poster.handleMessage(m));
 		runnerHandle.on("error", (e: Error) => poster.handleError(e));
 
-		try {
-			await runnerHandle.start("");
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			this.logger.error(`ClaudeRunner.start failed for ${issueId}: ${msg}`);
-			poster.handleError(err instanceof Error ? err : new Error(msg));
-		}
-
 		await new Promise<void>((resolve) => {
 			runnerHandle.once("complete", () => resolve());
+			runnerHandle.start("").catch((err) => {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.logger.error(`ClaudeRunner.start failed for ${issueId}: ${msg}`);
+				poster.handleError(err instanceof Error ? err : new Error(msg));
+				resolve();
+			});
 		});
 
 		await poster.flush();
@@ -216,13 +215,4 @@ function sanitizeBranch(s: string): string {
 
 function stripHtml(html: string): string {
 	return html.replace(/<[^>]+>/g, "").trim();
-}
-
-function escapeHtml(s: string): string {
-	return s
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#39;");
 }

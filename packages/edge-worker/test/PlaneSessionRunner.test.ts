@@ -171,4 +171,33 @@ describe("PlaneSessionRunner", () => {
 		// No invalid git ref characters.
 		expect(shim.branchName).not.toMatch(/[!()`~^:?*\\[\]\s]/);
 	});
+
+	it("does not hang when ClaudeRunner.start() rejects", async () => {
+		// Replace the runner's start with one that rejects synchronously.
+		mocks.fakeRunner.start = vi.fn(async () => {
+			throw new Error("Claude session already running");
+		});
+
+		const event = buildAssignmentEvent();
+
+		// If the runner hangs, this will fail under vitest's default 5s timeout.
+		const timedOut = new Promise<"timeout">((resolve) =>
+			setTimeout(() => resolve("timeout"), 2000),
+		);
+		const finished = runner
+			.handleAssignment(event, buildRepo())
+			.then(() => "finished" as const);
+		const winner = await Promise.race([finished, timedOut]);
+
+		expect(winner).toBe("finished");
+
+		// The poster should have received the error so a comment is queued.
+		// Acknowledge + error from start rejection = 2 createComment calls.
+		expect(mocks.planeIssueTracker.createComment).toHaveBeenCalledTimes(2);
+		const calls = (
+			mocks.planeIssueTracker.createComment as ReturnType<typeof vi.fn>
+		).mock.calls;
+		expect(calls[1]![2]).toContain("Error de Claude");
+		expect(calls[1]![2]).toContain("Claude session already running");
+	});
 });
