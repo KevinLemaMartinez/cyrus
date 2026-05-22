@@ -286,6 +286,9 @@ export const RepositoryConfigSchema = z.object({
 	routingLabels: z.array(z.string()).optional(),
 	projectKeys: z.array(z.string()).optional(),
 
+	// Plane configuration (optional — set when the repo is routed from a Plane CE project)
+	planeProjectId: z.string().uuid().optional(),
+
 	/** @deprecated Use EdgeConfig.linearWorkspaces[workspaceId].linearToken */
 	linearToken: z.string().optional(),
 	/** @deprecated Use EdgeConfig.linearWorkspaces[workspaceId].linearRefreshToken */
