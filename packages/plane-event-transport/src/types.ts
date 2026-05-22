@@ -14,10 +14,18 @@
  *
  * These types are intentionally narrow — we only model the fields the POC reads.
  */
+import type { FastifyInstance } from "fastify";
 
 export type PlaneVerificationMode = "direct" | "proxy";
 
 export interface PlaneEventTransportConfig {
+	/**
+	 * Fastify server instance to register the /plane-webhook endpoint on.
+	 * Must already have a content-type parser that preserves the raw body
+	 * on `request.rawBody` — HMAC verification needs the exact bytes Plane
+	 * sent.
+	 */
+	fastifyServer: FastifyInstance;
 	/** HMAC secret configured in Plane's webhook UI. Required for "direct" mode. */
 	secret: string;
 	/** "direct" verifies Plane's HMAC signature; "proxy" verifies a Bearer token instead. */

@@ -2,21 +2,15 @@
  * PlaneEventTransport — receives Plane CE webhooks, verifies them and emits
  * canonical PlaneAgentEvents.
  *
- * Mirrors the shape of LinearEventTransport. Differences:
- *   - Plane CE signs payloads with a static HMAC-SHA256 secret (no rotation).
- *   - Plane CE has no "App Mentions" event; we filter on assignment to a bot user.
+ * Mirrors the shape of LinearEventTransport: the Fastify server comes in via
+ * the constructor's config, and `register()` is called with no arguments.
  *
- * POC scope: registers a POST /plane-webhook endpoint on a Fastify server,
- * verifies the HMAC, translates to a PlaneAgentEvent and emits.
- *
- * The caller (edge-worker or dev-runner) MUST configure Fastify with a
- * content-type parser that stashes the raw body on `request.rawBody`
- * before this transport is registered — HMAC verification needs the
- * exact bytes Plane sent. See `scripts/dev-runner.ts` for the canonical
- * setup.
+ * Plane CE signs payloads with a static HMAC-SHA256 secret. We verify against
+ * the raw bytes the server received, so the Fastify instance passed in MUST
+ * have a content-type parser that preserves `request.rawBody`.
  */
 import { EventEmitter } from "node:events";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import {
 	translatePayload,
 	verifyPlaneSignature,
@@ -26,6 +20,8 @@ import type {
 	PlaneEventTransportEvents,
 	PlaneWebhookEnvelope,
 } from "./types.js";
+
+const DEDUPE_CAPACITY = 1000;
 
 export declare interface PlaneEventTransport {
 	on<K extends keyof PlaneEventTransportEvents>(
@@ -40,20 +36,16 @@ export declare interface PlaneEventTransport {
 
 export class PlaneEventTransport extends EventEmitter {
 	private config: PlaneEventTransportConfig;
+	private seenDeliveries: Set<string> = new Set();
+	private deliveryOrder: string[] = [];
 
 	constructor(config: PlaneEventTransportConfig) {
 		super();
 		this.config = config;
 	}
 
-	/**
-	 * Register the POST /plane-webhook endpoint on the given Fastify server.
-	 *
-	 * Pre-condition: the server has a content-type parser that preserves the
-	 * raw body on `request.rawBody`. Without it HMAC verification will fail
-	 * because Fastify's default JSON parser discards the original bytes.
-	 */
-	register(server: FastifyInstance): void {
+	register(): void {
+		const server = this.config.fastifyServer;
 		server.post(
 			"/plane-webhook",
 			async (req: FastifyRequest, reply: FastifyReply) => {
@@ -72,6 +64,13 @@ export class PlaneEventTransport extends EventEmitter {
 					return { error: "proxy mode not implemented in POC" };
 				}
 
+				if (deliveryId && this.seenDeliveries.has(deliveryId)) {
+					return { dedup: true, delivery: deliveryId };
+				}
+				if (deliveryId) {
+					this.rememberDelivery(deliveryId);
+				}
+
 				const envelope = req.body as PlaneWebhookEnvelope;
 				const agentEvent = translatePayload(envelope, {
 					botUserId: this.config.botUserId,
@@ -86,6 +85,15 @@ export class PlaneEventTransport extends EventEmitter {
 				return { ok: true, delivery: deliveryId, emitted: agentEvent !== null };
 			},
 		);
+	}
+
+	private rememberDelivery(deliveryId: string): void {
+		this.seenDeliveries.add(deliveryId);
+		this.deliveryOrder.push(deliveryId);
+		if (this.deliveryOrder.length > DEDUPE_CAPACITY) {
+			const evicted = this.deliveryOrder.shift();
+			if (evicted) this.seenDeliveries.delete(evicted);
+		}
 	}
 }
 

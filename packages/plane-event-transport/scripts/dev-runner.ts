@@ -24,10 +24,7 @@
  */
 import Fastify, { type FastifyRequest } from "fastify";
 import { PlaneEventTransport } from "../src/PlaneEventTransport.js";
-import type {
-	PlaneAgentEvent,
-	PlaneEventTransportConfig,
-} from "../src/types.js";
+import type { PlaneAgentEvent } from "../src/types.js";
 
 function requireEnv(name: string): string {
 	const v = process.env[name];
@@ -37,15 +34,6 @@ function requireEnv(name: string): string {
 	}
 	return v;
 }
-
-const config: PlaneEventTransportConfig = {
-	secret: requireEnv("PLANE_WEBHOOK_SECRET"),
-	verificationMode: "direct",
-	workspaceSlug: requireEnv("PLANE_WORKSPACE_SLUG"),
-	baseUrl: requireEnv("PLANE_BASE_URL"),
-	apiToken: requireEnv("PLANE_BOT_TOKEN"),
-	botUserId: requireEnv("PLANE_BOT_USER_ID"),
-};
 
 const host = process.env.LISTEN_HOST ?? "0.0.0.0";
 const port = Number.parseInt(process.env.LISTEN_PORT ?? "3000", 10);
@@ -73,7 +61,15 @@ async function main() {
 
 	server.get("/healthz", async () => ({ ok: true }));
 
-	const transport = new PlaneEventTransport(config);
+	const transport = new PlaneEventTransport({
+		fastifyServer: server,
+		secret: requireEnv("PLANE_WEBHOOK_SECRET"),
+		verificationMode: "direct",
+		workspaceSlug: requireEnv("PLANE_WORKSPACE_SLUG"),
+		baseUrl: requireEnv("PLANE_BASE_URL"),
+		apiToken: requireEnv("PLANE_BOT_TOKEN"),
+		botUserId: requireEnv("PLANE_BOT_USER_ID"),
+	});
 
 	transport.on("event", (e: PlaneAgentEvent) => {
 		const stamp = new Date().toISOString();
@@ -93,15 +89,13 @@ async function main() {
 		console.error("✗ transport error:", err);
 	});
 
-	transport.register(server);
+	transport.register();
 
 	await server.listen({ host, port });
 
 	console.log(`✓ plane-event-transport listening on http://${host}:${port}`);
 	console.log(`  webhook endpoint: POST /plane-webhook`);
 	console.log(`  healthcheck:      GET  /healthz`);
-	console.log(`  watching for assignments to bot user ${config.botUserId}`);
-	console.log(`  workspace: ${config.workspaceSlug}`);
 	console.log();
 }
 
