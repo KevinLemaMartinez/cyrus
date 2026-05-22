@@ -108,6 +108,29 @@ describe("PlaneEventTransport", () => {
 		expect(res.statusCode).toBe(401);
 	});
 
+	it("emits an event when x-plane-delivery is absent (no dedupe possible)", async () => {
+		const transport = new PlaneEventTransport(buildConfig(server));
+		transport.register();
+
+		const events: PlaneAgentEvent[] = [];
+		transport.on("event", (e) => events.push(e));
+
+		const body = loadFixture("issue-updated-assigned-to-bot.json");
+		const res = await server.inject({
+			method: "POST",
+			url: "/plane-webhook",
+			headers: {
+				"content-type": "application/json",
+				"x-plane-signature": sign(body),
+				// Intentionally omit x-plane-delivery.
+			},
+			payload: body,
+		});
+
+		expect(res.statusCode).toBe(200);
+		expect(events).toHaveLength(1);
+	});
+
 	it("dedupes deliveries by x-plane-delivery UUID", async () => {
 		const transport = new PlaneEventTransport(buildConfig(server));
 		transport.register();

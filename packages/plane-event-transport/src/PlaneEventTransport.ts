@@ -65,6 +65,7 @@ export class PlaneEventTransport extends EventEmitter {
 				}
 
 				if (deliveryId && this.seenDeliveries.has(deliveryId)) {
+					reply.code(200);
 					return { dedup: true, delivery: deliveryId };
 				}
 				if (deliveryId) {

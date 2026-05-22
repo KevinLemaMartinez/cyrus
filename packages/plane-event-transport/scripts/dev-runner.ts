@@ -94,6 +94,8 @@ async function main() {
 	await server.listen({ host, port });
 
 	console.log(`✓ plane-event-transport listening on http://${host}:${port}`);
+	console.log(`  bot UUID:          ${process.env.PLANE_BOT_USER_ID}`);
+	console.log(`  workspace slug:    ${process.env.PLANE_WORKSPACE_SLUG}`);
 	console.log(`  webhook endpoint: POST /plane-webhook`);
 	console.log(`  healthcheck:      GET  /healthz`);
 	console.log();
