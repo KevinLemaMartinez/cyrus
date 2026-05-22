@@ -1,5 +1,10 @@
 export { PlaneEventTransport } from "./PlaneEventTransport.js";
-export { PlaneIssueTrackerService } from "./PlaneIssueTrackerService.js";
+export {
+	type IssueCreateInput,
+	type IssueUpdateInput,
+	PlaneApiError,
+	PlaneIssueTrackerService,
+} from "./PlaneIssueTrackerService.js";
 export { PlaneMessageTranslator } from "./PlaneMessageTranslator.js";
 export {
 	isAssignedToBot,
@@ -16,6 +21,7 @@ export type {
 	PlaneEventTransportConfig,
 	PlaneEventTransportEvents,
 	PlaneIssue,
+	PlaneIssueRef,
 	PlaneState,
 	PlaneUser,
 	PlaneVerificationMode,

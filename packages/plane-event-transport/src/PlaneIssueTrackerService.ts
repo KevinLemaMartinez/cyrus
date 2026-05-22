@@ -3,27 +3,48 @@
  * service for Plane Community Edition 1.3.1.
  *
  * POC SCOPE (implemented):
- *   - fetchIssue
- *   - fetchCurrentUser
- *   - createComment
- *   - updateIssue (limited: state + assignees only)
+ *   - fetchIssue(issueId, projectId)        GET    /workspaces/<slug>/projects/<p>/issues/<i>/
+ *   - fetchCurrentUser()                     GET    /users/me/
+ *   - createComment(issueId, projectId, body) POST  /workspaces/<slug>/projects/<p>/issues/<i>/comments/
+ *   - updateIssue(issueId, projectId, ...)   PATCH  /workspaces/<slug>/projects/<p>/issues/<i>/
+ *   - createIssue(projectId, body)           POST   /workspaces/<slug>/projects/<p>/issues/
  *   - getPlatformType / getPlatformMetadata
  *
  * Everything else throws — the edge-worker should not call those paths in
- * the POC flow. When we move beyond POC, fill these in following the same
- * pattern (REST call against /api/v1/workspaces/:slug/projects/:project/...).
+ * the POC flow.
  *
- * Plane API auth: Bearer token from a per-bot API key. Token is held in
- * `config.apiToken` and never logged.
+ * Plane CE quirks worth noting:
+ *   - Issues are addressed by UUID *and the project_id in the URL*.
+ *     There is no workspace-wide /issues/<id>/ shortcut (returns 403).
+ *   - `/users/me/` is NOT workspace-scoped — it's at /api/v1/users/me/.
+ *   - Auth: `X-API-Key: <plane_api_xxx>` header (per-user API token).
  */
 import type {
 	PlaneComment,
 	PlaneEventTransportConfig,
-	PlaneIssue,
+	PlaneIssueRef,
 	PlaneUser,
 } from "./types.js";
 
 const NOT_IMPLEMENTED = "Not implemented in POC";
+
+export interface IssueCreateInput {
+	name: string;
+	description_html?: string;
+	priority?: "urgent" | "high" | "medium" | "low" | "none";
+	state?: string; // state UUID
+	assignees?: string[]; // user UUIDs
+	labels?: string[]; // label UUIDs
+}
+
+export interface IssueUpdateInput {
+	name?: string;
+	description_html?: string;
+	priority?: "urgent" | "high" | "medium" | "low" | "none";
+	state?: string;
+	assignees?: string[];
+	labels?: string[];
+}
 
 export class PlaneIssueTrackerService {
 	private readonly baseUrl: string;
@@ -41,21 +62,31 @@ export class PlaneIssueTrackerService {
 		path: string,
 		body?: unknown,
 	): Promise<T> {
-		const url = `${this.baseUrl}/api/v1/workspaces/${this.workspaceSlug}${path}`;
+		const url = `${this.baseUrl}${path}`;
 		const res = await fetch(url, {
 			method,
 			headers: {
 				"X-API-Key": this.token,
 				"Content-Type": "application/json",
 			},
-			body: body ? JSON.stringify(body) : undefined,
+			body: body !== undefined ? JSON.stringify(body) : undefined,
 		});
 		if (!res.ok) {
-			throw new Error(
-				`Plane API ${method} ${path} -> ${res.status} ${await res.text()}`,
-			);
+			const text = await res.text().catch(() => "");
+			throw new PlaneApiError(method, path, res.status, text);
 		}
-		return (await res.json()) as T;
+		// PATCH may return empty body on no-op; tolerate.
+		const text = await res.text();
+		if (text.length === 0) return undefined as unknown as T;
+		return JSON.parse(text) as T;
+	}
+
+	private wsPath(path: string): string {
+		return `/api/v1/workspaces/${this.workspaceSlug}${path}`;
+	}
+
+	private projectPath(projectId: string, path: string): string {
+		return this.wsPath(`/projects/${projectId}${path}`);
 	}
 
 	// ──────────────────────────────────────────────────────────────────────
@@ -75,46 +106,53 @@ export class PlaneIssueTrackerService {
 	}
 
 	async fetchCurrentUser(): Promise<PlaneUser> {
-		// Plane has a workspace-scoped "me" endpoint
-		return this.http<PlaneUser>("GET", `/users/me/`);
+		return this.http<PlaneUser>("GET", "/api/v1/users/me/");
 	}
 
-	async fetchIssue(idOrIdentifier: string): Promise<PlaneIssue> {
-		// In Plane CE, issues are addressed by UUID; sequence identifiers
-		// (PFL-123) are project-scoped and require a separate lookup.
-		// POC accepts only UUIDs.
-		if (!isUuid(idOrIdentifier)) {
+	async fetchIssue(issueId: string, projectId: string): Promise<PlaneIssueRef> {
+		if (!isUuid(issueId) || !isUuid(projectId)) {
 			throw new Error(
-				`POC accepts only UUIDs for fetchIssue; got '${idOrIdentifier}'`,
+				`fetchIssue requires UUIDs (got issueId='${issueId}', projectId='${projectId}')`,
 			);
 		}
-		// Plane requires project_id in the path — caller must pass it via
-		// PlaneAgentEvent.projectId. fetchIssue here is by UUID, so we use
-		// the workspace-level issue endpoint:
-		return this.http<PlaneIssue>("GET", `/issues/${idOrIdentifier}/`);
+		return this.http<PlaneIssueRef>(
+			"GET",
+			this.projectPath(projectId, `/issues/${issueId}/`),
+		);
 	}
 
-	async createComment(
-		issueId: string,
+	async createIssue(
 		projectId: string,
-		body: string,
-	): Promise<PlaneComment> {
-		return this.http<PlaneComment>(
+		input: IssueCreateInput,
+	): Promise<PlaneIssueRef> {
+		return this.http<PlaneIssueRef>(
 			"POST",
-			`/projects/${projectId}/issues/${issueId}/comments/`,
-			{ comment_html: body },
+			this.projectPath(projectId, `/issues/`),
+			input,
 		);
 	}
 
 	async updateIssue(
 		issueId: string,
 		projectId: string,
-		updates: { state?: string; assignees?: string[] },
-	): Promise<PlaneIssue> {
-		return this.http<PlaneIssue>(
+		updates: IssueUpdateInput,
+	): Promise<PlaneIssueRef> {
+		return this.http<PlaneIssueRef>(
 			"PATCH",
-			`/projects/${projectId}/issues/${issueId}/`,
+			this.projectPath(projectId, `/issues/${issueId}/`),
 			updates,
+		);
+	}
+
+	async createComment(
+		issueId: string,
+		projectId: string,
+		commentHtml: string,
+	): Promise<PlaneComment> {
+		return this.http<PlaneComment>(
+			"POST",
+			this.projectPath(projectId, `/issues/${issueId}/comments/`),
+			{ comment_html: commentHtml },
 		);
 	}
 
@@ -178,6 +216,20 @@ export class PlaneIssueTrackerService {
 	}
 	requestFileUpload(): never {
 		throw new Error(NOT_IMPLEMENTED);
+	}
+}
+
+export class PlaneApiError extends Error {
+	constructor(
+		public readonly method: string,
+		public readonly path: string,
+		public readonly status: number,
+		public readonly body: string,
+	) {
+		super(
+			`Plane API ${method} ${path} -> HTTP ${status} ${body.slice(0, 200)}`,
+		);
+		this.name = "PlaneApiError";
 	}
 }
 

@@ -12,6 +12,7 @@
 		"build": "tsc",
 		"dev": "tsc --watch",
 		"dev:server": "tsx scripts/dev-runner.ts",
+		"smoke:tracker": "tsx scripts/smoke-tracker.ts",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest",
 		"test:run": "vitest run --passWithNoTests"

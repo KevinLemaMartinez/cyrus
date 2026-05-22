@@ -82,17 +82,28 @@ export interface PlaneState {
 		| "triage";
 }
 
-export interface PlaneIssue {
+/**
+ * Plane returns two different shapes for the same issue depending on where
+ * you read it from:
+ *
+ *   - Webhook payloads ({@link PlaneIssue}): nested objects in `state` and
+ *     `assignees`. Plane "expands" foreign keys for the consumer.
+ *   - REST API ({@link PlaneIssueRef}): only the UUIDs are returned in
+ *     `state` and `assignees`. The consumer has to fetch related entities
+ *     separately if it needs the name / group / email.
+ *
+ * The POC modeling acknowledges both shapes explicitly instead of trying
+ * to merge them into a single union.
+ */
+interface PlaneIssueBase {
 	id: string;
 	name: string;
 	description_html: string | null;
-	description_stripped: string | null;
+	description_stripped?: string | null;
 	priority: "urgent" | "high" | "medium" | "low" | "none";
-	state: PlaneState;
-	project: string; // project UUID
-	workspace: string; // workspace UUID
-	assignees: PlaneUser[];
-	labels: string[]; // label UUIDs (raw)
+	project: string;
+	workspace: string;
+	labels: string[];
 	sequence_id: number;
 	created_by: string | null;
 	updated_by: string | null;
@@ -105,6 +116,24 @@ export interface PlaneIssue {
 	start_date: string | null;
 	completed_at: string | null;
 	archived_at: string | null;
+}
+
+/**
+ * Issue as delivered inside a Plane webhook payload — `state` and
+ * `assignees` come expanded as full objects.
+ */
+export interface PlaneIssue extends PlaneIssueBase {
+	state: PlaneState;
+	assignees: PlaneUser[];
+}
+
+/**
+ * Issue as returned by the REST API (`GET /workspaces/<slug>/projects/<p>/issues/<i>/`)
+ * — `state` is the state UUID, `assignees` is an array of user UUIDs.
+ */
+export interface PlaneIssueRef extends PlaneIssueBase {
+	state: string;
+	assignees: string[];
 }
 
 export interface PlaneComment {
