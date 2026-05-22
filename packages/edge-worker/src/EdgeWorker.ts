@@ -136,6 +136,11 @@ import {
 	type ResolvedSession,
 } from "cyrus-mcp-tools";
 import {
+	type PlaneAgentEvent,
+	PlaneEventTransport,
+	PlaneIssueTrackerService,
+} from "cyrus-plane-event-transport";
+import {
 	SlackEventTransport,
 	type SlackWebhookEvent,
 } from "cyrus-slack-event-transport";
@@ -152,6 +157,7 @@ import { EgressProxy } from "./EgressProxy.js";
 import { GitService } from "./GitService.js";
 import { GlobalSessionRegistry } from "./GlobalSessionRegistry.js";
 import { McpConfigService } from "./McpConfigService.js";
+import { PlaneSessionRunner } from "./PlaneSessionRunner.js";
 import { PromptBuilder } from "./PromptBuilder.js";
 import type {
 	IssueContextResult,
@@ -213,6 +219,9 @@ export class EdgeWorker extends EventEmitter {
 	private gitHubAppTokenProvider: GitHubAppTokenProvider | null = null; // Self-hosted GitHub App token minting
 	private gitLabEventTransport: GitLabEventTransport | null = null; // GitLab event transport for forwarded GitLab webhooks
 	private slackEventTransport: SlackEventTransport | null = null;
+	private planeEventTransport: PlaneEventTransport | null = null;
+	private planeIssueTracker: PlaneIssueTrackerService | null = null;
+	private planeSessionRunner: PlaneSessionRunner | null = null;
 	private chatSessionHandler: ChatSessionHandler<SlackWebhookEvent> | null =
 		null;
 	private gitHubCommentService: GitHubCommentService; // Service for posting comments back to GitHub PRs
@@ -823,6 +832,7 @@ export class EdgeWorker extends EventEmitter {
 		this.registerGitHubEventTransport();
 		this.registerGitLabEventTransport();
 		this.registerSlackEventTransport();
+		this.registerPlaneEventTransport();
 
 		// 3. Create and register ConfigUpdater (both platforms)
 		this.configUpdater = new ConfigUpdater(
@@ -971,6 +981,111 @@ export class EdgeWorker extends EventEmitter {
 			`GitHub event transport registered (${verificationMode} mode)`,
 		);
 		this.logger.info("Webhook endpoint: POST /github-webhook");
+	}
+
+	/**
+	 * Register the Plane CE event transport when env vars are present.
+	 *
+	 * Required env vars:
+	 *   PLANE_BASE_URL, PLANE_WORKSPACE_SLUG, PLANE_BOT_USER_ID,
+	 *   PLANE_BOT_TOKEN, PLANE_WEBHOOK_SECRET.
+	 *
+	 * If any is missing, the /plane-webhook endpoint is not mounted.
+	 */
+	private registerPlaneEventTransport(): void {
+		const baseUrl = process.env.PLANE_BASE_URL;
+		const workspaceSlug = process.env.PLANE_WORKSPACE_SLUG;
+		const botUserId = process.env.PLANE_BOT_USER_ID;
+		const apiToken = process.env.PLANE_BOT_TOKEN;
+		const webhookSecret = process.env.PLANE_WEBHOOK_SECRET;
+
+		if (
+			!baseUrl ||
+			!workspaceSlug ||
+			!botUserId ||
+			!apiToken ||
+			!webhookSecret
+		) {
+			this.logger.info("Plane transport not configured, skipping");
+			return;
+		}
+
+		this.planeIssueTracker = new PlaneIssueTrackerService({
+			fastifyServer: this.sharedApplicationServer.getFastifyInstance(),
+			secret: webhookSecret,
+			verificationMode: "direct",
+			workspaceSlug,
+			baseUrl,
+			apiToken,
+			botUserId,
+		});
+
+		this.planeEventTransport = new PlaneEventTransport({
+			fastifyServer: this.sharedApplicationServer.getFastifyInstance(),
+			secret: webhookSecret,
+			verificationMode: "direct",
+			workspaceSlug,
+			baseUrl,
+			apiToken,
+			botUserId,
+		});
+
+		this.planeSessionRunner = new PlaneSessionRunner({
+			gitService: this.gitService,
+			planeIssueTracker: this.planeIssueTracker,
+			claudeRunnerFactory: (config) => new ClaudeRunner(config),
+			cyrusHome: this.cyrusHome,
+			logger: this.logger,
+		});
+
+		this.planeEventTransport.on("event", (event: PlaneAgentEvent) => {
+			this.handlePlaneEvent(event).catch((err) => {
+				this.logger.error(
+					`Failed to handle Plane event: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
+		});
+
+		this.planeEventTransport.register();
+
+		this.logger.info("✅ Plane event transport registered");
+		this.logger.info("   Webhook endpoint: /plane-webhook");
+	}
+
+	/**
+	 * Dispatch a verified Plane agent event to the right handler.
+	 *
+	 * - "issue.assigned_to_bot" → look up the repo by planeProjectId and
+	 *   call PlaneSessionRunner.handleAssignment.
+	 * - "comment.created_on_bot_issue" → POC: log and ignore.
+	 */
+	private async handlePlaneEvent(event: PlaneAgentEvent): Promise<void> {
+		if (event.type === "comment.created_on_bot_issue") {
+			this.logger.info(
+				`Plane comment event ignored in POC (issue=${event.issue.id})`,
+			);
+			return;
+		}
+
+		const repo = Array.from(this.repositories.values()).find(
+			(r) => r.planeProjectId === event.projectId,
+		);
+
+		if (!repo) {
+			this.logger.warn(
+				`No repository configured with planeProjectId=${event.projectId} — dropping event`,
+			);
+			return;
+		}
+
+		if (!this.planeSessionRunner) {
+			this.logger.warn(
+				"Plane session runner is not initialized — dropping event",
+			);
+			return;
+		}
+
+		await this.planeSessionRunner.handleAssignment(event, repo);
 	}
 
 	/**
