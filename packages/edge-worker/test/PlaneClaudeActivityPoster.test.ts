@@ -91,7 +91,23 @@ describe("PlaneClaudeActivityPoster", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0]).toContain("🔧");
 		expect(calls[0]).toContain("<code>Bash</code>");
-		expect(calls[0]).toContain('"cmd": "ls"');
+		expect(calls[0]).toContain("&quot;cmd&quot;");
+		expect(calls[0]).toContain("&quot;ls&quot;");
+	});
+
+	it("escapes HTML-sensitive characters in tool_use JSON input", async () => {
+		const poster = makePoster(postComment);
+		poster.handleMessage(
+			assistantToolUseMessage("Bash", {
+				cmd: "echo </pre><script>alert(1)</script>",
+			}),
+		);
+		await poster.flush();
+		expect(calls).toHaveLength(1);
+		// The closing </pre> from the tool input must be escaped so it cannot
+		// break the surrounding <pre> block in Plane's HTML rendering.
+		expect(calls[0]).not.toContain("</pre><script>");
+		expect(calls[0]).toContain("&lt;/pre&gt;");
 	});
 
 	it("posts a success tool_result for a user tool_result message", async () => {
@@ -123,8 +139,7 @@ describe("PlaneClaudeActivityPoster", () => {
 		expect(calls[1]).toContain("All done");
 	});
 
-	it("posts comments in event-order even when postComment resolves out of order", async () => {
-		// Build a postComment whose promises resolve out of order.
+	it("posts comments in event-order and serializes posts through the queue", async () => {
 		const resolvers: Array<() => void> = [];
 		postComment = vi.fn((html: string) => {
 			calls.push(html);
@@ -138,15 +153,20 @@ describe("PlaneClaudeActivityPoster", () => {
 		poster.handleMessage(assistantTextMessage("second"));
 		poster.handleMessage(assistantTextMessage("third"));
 
-		// We expect only ONE call to be in flight (queue is sequential).
+		// Let microtasks settle: the first call should now be in flight, but
+		// the queue should not have started the second yet (sequential).
+		await new Promise((r) => setImmediate(r));
 		expect(postComment).toHaveBeenCalledTimes(1);
-		resolvers.shift()!(); // resolve first
+
+		resolvers.shift()!();
 		await new Promise((r) => setImmediate(r));
 		expect(postComment).toHaveBeenCalledTimes(2);
-		resolvers.shift()!(); // resolve second
+
+		resolvers.shift()!();
 		await new Promise((r) => setImmediate(r));
 		expect(postComment).toHaveBeenCalledTimes(3);
-		resolvers.shift()!(); // resolve third
+
+		resolvers.shift()!();
 		await poster.flush();
 		expect(calls).toEqual(["<p>first</p>", "<p>second</p>", "<p>third</p>"]);
 	});

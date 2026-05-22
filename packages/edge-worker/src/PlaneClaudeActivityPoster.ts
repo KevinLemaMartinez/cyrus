@@ -39,8 +39,6 @@ export class PlaneClaudeActivityPoster {
 	 * any awaits — see the NOTE in `enqueue`.
 	 */
 	private queue: Promise<void> = Promise.resolve();
-	/** Whether at least one post call is currently outstanding. */
-	private inFlight = false;
 	private lastAssistantText: string = "";
 
 	constructor(config: PlaneClaudeActivityPosterConfig) {
@@ -70,53 +68,18 @@ export class PlaneClaudeActivityPoster {
 
 	/**
 	 * Append one HTML post to the sequential chain.
-	 *
-	 * NOTE on synchronous first-call behaviour:
-	 * When the queue is idle (`inFlight === false`), the current `this.queue`
-	 * is already resolved. We call `this.postComment(html)` immediately
-	 * (synchronously) before attaching `.then()`/`.catch()` handlers, so the
-	 * caller observes the call without needing to await any microtask.
-	 * Subsequent `enqueue` calls while `inFlight === true` chain their posts
-	 * onto the existing promise and will only fire after the previous one
-	 * completes.
+	 * Posts are serialized via the promise queue — the next call does not
+	 * start until the previous one resolves or rejects.
 	 */
 	private enqueue(html: string): void {
-		if (!this.inFlight) {
-			// First post: invoke synchronously so tests can observe 1 call
-			// immediately after the first handleMessage() invocation.
-			this.inFlight = true;
-			let p: Promise<unknown>;
-			try {
-				p = Promise.resolve(this.postComment(html));
-			} catch (err) {
-				p = Promise.reject(err);
-			}
-			this.queue = p
-				.then(() => {
-					this.inFlight = false;
-				})
-				.catch((err) => {
-					this.inFlight = false;
-					this.logger.error(
-						`Failed to post Plane comment: ${err instanceof Error ? err.message : String(err)}`,
-					);
-				});
-		} else {
-			// Chain onto the existing in-flight post.
-			this.queue = this.queue.then(() => {
-				this.inFlight = true;
-				return Promise.resolve(this.postComment(html))
-					.then(() => {
-						this.inFlight = false;
-					})
-					.catch((err) => {
-						this.inFlight = false;
-						this.logger.error(
-							`Failed to post Plane comment: ${err instanceof Error ? err.message : String(err)}`,
-						);
-					});
+		this.queue = this.queue
+			.then(() => this.postComment(html))
+			.then(() => undefined)
+			.catch((err) => {
+				this.logger.error(
+					`Failed to post Plane comment: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			});
-		}
 	}
 
 	private renderMessage(message: SDKMessage): string[] {
@@ -161,7 +124,7 @@ export class PlaneClaudeActivityPoster {
 						? `${json.slice(0, TOOL_INPUT_PREVIEW_MAX)}…`
 						: json;
 				out.push(
-					`<p>🔧 <code>${escapeHtml(b.name)}</code></p><pre>${truncated}</pre>`,
+					`<p>🔧 <code>${escapeHtml(b.name)}</code></p><pre>${escapeHtml(truncated)}</pre>`,
 				);
 			}
 		}
