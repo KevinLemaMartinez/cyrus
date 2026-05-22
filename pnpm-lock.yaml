@@ -355,6 +355,9 @@ importers:
       cyrus-mcp-tools:
         specifier: workspace:*
         version: link:../mcp-tools
+      cyrus-plane-event-transport:
+        specifier: workspace:*
+        version: link:../plane-event-transport
       cyrus-simple-agent-runner:
         specifier: workspace:*
         version: link:../simple-agent-runner
