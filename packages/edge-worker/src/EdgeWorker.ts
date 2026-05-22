@@ -999,36 +999,38 @@ export class EdgeWorker extends EventEmitter {
 		const apiToken = process.env.PLANE_BOT_TOKEN;
 		const webhookSecret = process.env.PLANE_WEBHOOK_SECRET;
 
-		if (
-			!baseUrl ||
-			!workspaceSlug ||
-			!botUserId ||
-			!apiToken ||
-			!webhookSecret
-		) {
-			this.logger.info("Plane transport not configured, skipping");
+		const missing = (
+			[
+				["PLANE_BASE_URL", baseUrl],
+				["PLANE_WORKSPACE_SLUG", workspaceSlug],
+				["PLANE_BOT_USER_ID", botUserId],
+				["PLANE_BOT_TOKEN", apiToken],
+				["PLANE_WEBHOOK_SECRET", webhookSecret],
+			] as Array<[string, string | undefined]>
+		)
+			.filter(([, v]) => !v)
+			.map(([k]) => k);
+
+		if (missing.length > 0) {
+			this.logger.info(
+				`Plane transport not configured (missing: ${missing.join(", ")}), skipping`,
+			);
 			return;
 		}
 
-		this.planeIssueTracker = new PlaneIssueTrackerService({
-			fastifyServer: this.sharedApplicationServer.getFastifyInstance(),
-			secret: webhookSecret,
-			verificationMode: "direct",
-			workspaceSlug,
-			baseUrl,
-			apiToken,
-			botUserId,
-		});
+		const fastifyServer = this.sharedApplicationServer.getFastifyInstance();
+		const planeCfg = {
+			fastifyServer,
+			secret: webhookSecret!,
+			verificationMode: "direct" as const,
+			workspaceSlug: workspaceSlug!,
+			baseUrl: baseUrl!,
+			apiToken: apiToken!,
+			botUserId: botUserId!,
+		};
 
-		this.planeEventTransport = new PlaneEventTransport({
-			fastifyServer: this.sharedApplicationServer.getFastifyInstance(),
-			secret: webhookSecret,
-			verificationMode: "direct",
-			workspaceSlug,
-			baseUrl,
-			apiToken,
-			botUserId,
-		});
+		this.planeIssueTracker = new PlaneIssueTrackerService(planeCfg);
+		this.planeEventTransport = new PlaneEventTransport(planeCfg);
 
 		this.planeSessionRunner = new PlaneSessionRunner({
 			gitService: this.gitService,
@@ -1046,10 +1048,14 @@ export class EdgeWorker extends EventEmitter {
 			});
 		});
 
+		this.planeEventTransport.on("error", (error: Error) => {
+			this.handleError(error);
+		});
+
 		this.planeEventTransport.register();
 
-		this.logger.info("✅ Plane event transport registered");
-		this.logger.info("   Webhook endpoint: /plane-webhook");
+		this.logger.info("Plane event transport registered (direct mode)");
+		this.logger.info("Webhook endpoint: POST /plane-webhook");
 	}
 
 	/**
