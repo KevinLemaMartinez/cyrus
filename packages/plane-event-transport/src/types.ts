@@ -1,7 +1,17 @@
 /**
  * Plane (Community Edition) webhook payload and entity types.
  *
- * Source of truth: Plane REST API + webhook events as observed in Plane CE 1.3.1.
+ * Shape verified against real payloads from Plane CE 1.3.1 captured on
+ * 2026-05-22 (see test/fixtures/*.json).
+ *
+ * Headers Plane sends on each delivery:
+ *   User-Agent:       Autopilot
+ *   Content-Type:     application/json
+ *   X-Plane-Delivery: <uuid>            unique per delivery; use for dedupe
+ *   X-Plane-Event:    issue | issue_comment | ...
+ *   X-Plane-Signature: <hex sha256>     HMAC of the raw body keyed with the
+ *                                        secret configured in the webhook UI.
+ *
  * These types are intentionally narrow — we only model the fields the POC reads.
  */
 
@@ -14,7 +24,7 @@ export interface PlaneEventTransportConfig {
 	verificationMode: PlaneVerificationMode;
 	/** Optional allowlist of source IPs/CIDRs that may POST to /plane-webhook. */
 	ipAllowlist?: string[];
-	/** Workspace slug (e.g. "pulpparty") — required to call Plane API. */
+	/** Workspace slug (e.g. "panfleet") — required to call Plane API. */
 	workspaceSlug: string;
 	/** Base URL of the Plane instance, e.g. "https://plane.pulp.lan". */
 	baseUrl: string;
@@ -25,28 +35,44 @@ export interface PlaneEventTransportConfig {
 }
 
 /**
- * Plane sends webhook envelope: { event, action, data } at the top level.
- * `event` identifies the entity type ("issue", "issue_comment", "project", ...).
- * `action` is one of: "created" | "updated" | "deleted".
+ * Top-level envelope of every Plane webhook delivery.
  */
 export interface PlaneWebhookEnvelope<TData = unknown> {
 	event: string;
 	action: "created" | "updated" | "deleted";
+	webhook_id: string;
+	workspace_id: string;
 	data: TData;
+	activity?: PlaneActivity;
+}
+
+/**
+ * Activity record attached to update/create events. Carries the diff
+ * (`field`, `new_value`, `old_value`) and the user who triggered the change.
+ */
+export interface PlaneActivity {
+	field: string | null;
+	new_value: unknown;
+	old_value: unknown;
+	actor: PlaneUser;
+	old_identifier: string | null;
+	new_identifier: string | null;
 }
 
 export interface PlaneUser {
 	id: string;
-	email: string | null;
-	first_name: string | null;
-	last_name: string | null;
+	email: string;
+	first_name: string;
+	last_name: string;
 	display_name: string;
-	avatar: string | null;
+	avatar: string;
+	avatar_url: string | null;
 }
 
-export interface PlaneWorkflowState {
+export interface PlaneState {
 	id: string;
 	name: string;
+	color: string;
 	group:
 		| "backlog"
 		| "unstarted"
@@ -54,7 +80,6 @@ export interface PlaneWorkflowState {
 		| "completed"
 		| "cancelled"
 		| "triage";
-	color: string;
 }
 
 export interface PlaneIssue {
@@ -63,22 +88,29 @@ export interface PlaneIssue {
 	description_html: string | null;
 	description_stripped: string | null;
 	priority: "urgent" | "high" | "medium" | "low" | "none";
-	state: string; // workflow state id
-	project: string; // project id
-	workspace: string; // workspace id
-	assignees: string[]; // array of user ids
-	labels: string[]; // array of label ids
-	sequence_id: number; // e.g. PFL-123 → 123
-	created_by: string;
+	state: PlaneState;
+	project: string; // project UUID
+	workspace: string; // workspace UUID
+	assignees: PlaneUser[];
+	labels: string[]; // label UUIDs (raw)
+	sequence_id: number;
+	created_by: string | null;
 	updated_by: string | null;
 	created_at: string;
 	updated_at: string;
+	deleted_at: string | null;
+	is_draft: boolean;
+	parent: string | null;
+	target_date: string | null;
+	start_date: string | null;
+	completed_at: string | null;
+	archived_at: string | null;
 }
 
 export interface PlaneComment {
 	id: string;
 	issue: string;
-	actor: string; // user id
+	actor: string;
 	comment_html: string;
 	comment_stripped: string;
 	created_at: string;
@@ -102,6 +134,7 @@ export type PlaneAgentEvent =
 			issue: PlaneIssue;
 			projectId: string;
 			workspaceSlug: string;
+			actor: PlaneUser;
 	  }
 	| {
 			type: "comment.created_on_bot_issue";
@@ -109,4 +142,5 @@ export type PlaneAgentEvent =
 			comment: PlaneComment;
 			projectId: string;
 			workspaceSlug: string;
+			actor: PlaneUser;
 	  };

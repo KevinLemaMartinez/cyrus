@@ -7,15 +7,17 @@ export {
 	isIssueEnvelope,
 	translatePayload,
 	verifyPlaneSignature,
+	wasJustAssignedToBot,
 } from "./plane-webhook-utils.js";
 export type {
+	PlaneActivity,
 	PlaneAgentEvent,
 	PlaneComment,
 	PlaneEventTransportConfig,
 	PlaneEventTransportEvents,
 	PlaneIssue,
+	PlaneState,
 	PlaneUser,
 	PlaneVerificationMode,
 	PlaneWebhookEnvelope,
-	PlaneWorkflowState,
 } from "./types.js";

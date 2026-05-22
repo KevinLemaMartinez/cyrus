@@ -1,0 +1,60 @@
+{
+	"event": "issue",
+	"action": "created",
+	"webhook_id": "68c767e3-67de-4cf4-8f96-cf05a858658c",
+	"workspace_id": "a4a8448e-cef7-407b-963f-4cb935bd35c4",
+	"data": {
+		"id": "a0f19eec-e6fd-414b-b5a0-57f14e13f043",
+		"labels": [],
+		"assignees": [],
+		"state": {
+			"id": "bf6b0cdd-cbc3-435d-a835-c6cbf5c3112f",
+			"name": "Backlog",
+			"color": "#60646C",
+			"group": "backlog"
+		},
+		"description": {},
+		"created_at": "2026-05-22T20:41:12.130578Z",
+		"updated_at": "2026-05-22T20:41:12.198255Z",
+		"deleted_at": null,
+		"point": null,
+		"name": "Prueba webhook",
+		"description_json": {},
+		"description_html": "<p class=\"editor-paragraph-block\" data-id=\"6e27e39d-c070-47d6-963c-2ea4f95339b3\">Hay que probar esto a ver si turra</p>",
+		"description_stripped": "Hay que probar esto a ver si turra",
+		"description_binary": null,
+		"priority": "none",
+		"start_date": null,
+		"target_date": null,
+		"sequence_id": 1,
+		"sort_order": 65535.0,
+		"completed_at": null,
+		"archived_at": null,
+		"is_draft": false,
+		"external_source": null,
+		"external_id": null,
+		"created_by": "edc73506-11d8-413c-bd34-7541bd62418d",
+		"updated_by": null,
+		"project": "35502ab9-d5b6-4397-9917-732a69eb9dd4",
+		"workspace": "a4a8448e-cef7-407b-963f-4cb935bd35c4",
+		"parent": null,
+		"estimate_point": null,
+		"type": null
+	},
+	"activity": {
+		"field": null,
+		"new_value": null,
+		"old_value": null,
+		"actor": {
+			"id": "edc73506-11d8-413c-bd34-7541bd62418d",
+			"first_name": "Kevin",
+			"last_name": "Lema",
+			"email": "kevin.soesto@gmail.com",
+			"avatar": "",
+			"avatar_url": null,
+			"display_name": "kevin.soesto"
+		},
+		"old_identifier": null,
+		"new_identifier": null
+	}
+}

@@ -1,39 +1,33 @@
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
 	isAssignedToBot,
 	translatePayload,
 	verifyPlaneSignature,
+	wasJustAssignedToBot,
 } from "../src/plane-webhook-utils.js";
 import type { PlaneIssue, PlaneWebhookEnvelope } from "../src/types.js";
 
 const SECRET = "test-secret-xxx";
-const BOT = "00000000-0000-0000-0000-000000000001";
+const BOT = "3322520e-b959-4cbd-8b7c-929b05e445da"; // matches fixture
 const OTHER = "00000000-0000-0000-0000-000000000099";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function loadFixture(name: string): {
+	rawBody: string;
+	envelope: PlaneWebhookEnvelope;
+} {
+	const path = resolve(__dirname, "fixtures", name);
+	const rawBody = readFileSync(path, "utf8");
+	return { rawBody, envelope: JSON.parse(rawBody) as PlaneWebhookEnvelope };
+}
 
 function sign(body: string): string {
 	return createHmac("sha256", SECRET).update(body).digest("hex");
-}
-
-function fakeIssue(over: Partial<PlaneIssue> = {}): PlaneIssue {
-	return {
-		id: "11111111-1111-1111-1111-111111111111",
-		name: "Test issue",
-		description_html: null,
-		description_stripped: null,
-		priority: "none",
-		state: "state-1",
-		project: "proj-1",
-		workspace: "ws-1",
-		assignees: [],
-		labels: [],
-		sequence_id: 1,
-		created_by: OTHER,
-		updated_by: null,
-		created_at: "2026-05-22T19:00:00Z",
-		updated_at: "2026-05-22T19:00:00Z",
-		...over,
-	};
 }
 
 describe("verifyPlaneSignature", () => {
@@ -52,8 +46,8 @@ describe("verifyPlaneSignature", () => {
 			action: "updated",
 			data: {},
 		});
-		const bad = sign(body).replace(/.$/, "0").replace(/.$/, "1"); // mutate
-		expect(verifyPlaneSignature(body, bad, SECRET)).toBe(false);
+		const mutated = `${sign(body).slice(0, -2)}00`;
+		expect(verifyPlaneSignature(body, mutated, SECRET)).toBe(false);
 	});
 
 	it("returns false when signature header is missing", () => {
@@ -61,47 +55,109 @@ describe("verifyPlaneSignature", () => {
 	});
 });
 
-describe("isAssignedToBot", () => {
-	it("true when bot is in assignees", () => {
-		expect(isAssignedToBot(fakeIssue({ assignees: [OTHER, BOT] }), BOT)).toBe(
-			true,
-		);
+describe("real Plane payloads", () => {
+	it("issue-created fixture: bot is not yet assigned, no event emitted", () => {
+		const { envelope } = loadFixture("issue-created.json");
+		expect(envelope.event).toBe("issue");
+		expect(envelope.action).toBe("created");
+		const issue = envelope.data as PlaneIssue;
+		expect(issue.assignees).toEqual([]);
+		expect(
+			translatePayload(envelope, {
+				botUserId: BOT,
+				workspaceSlug: "panfleet",
+			}),
+		).toBeNull();
 	});
 
-	it("false when bot is not in assignees", () => {
-		expect(isAssignedToBot(fakeIssue({ assignees: [OTHER] }), BOT)).toBe(false);
-	});
-});
+	it("issue-updated-assigned-to-bot fixture: emits issue.assigned_to_bot", () => {
+		const { envelope } = loadFixture("issue-updated-assigned-to-bot.json");
+		expect(envelope.event).toBe("issue");
+		expect(envelope.action).toBe("updated");
+		expect(envelope.activity?.field).toBe("assignee_ids");
 
-describe("translatePayload", () => {
-	const ctx = { botUserId: BOT, workspaceSlug: "pulpparty" };
+		const issue = envelope.data as PlaneIssue;
+		expect(isAssignedToBot(issue, BOT)).toBe(true);
+		expect(wasJustAssignedToBot(envelope.activity, BOT)).toBe(true);
 
-	it("emits issue.assigned_to_bot when bot is among assignees", () => {
-		const env: PlaneWebhookEnvelope = {
-			event: "issue",
-			action: "updated",
-			data: fakeIssue({ assignees: [BOT] }),
-		};
-		const result = translatePayload(env, ctx);
+		const result = translatePayload(envelope, {
+			botUserId: BOT,
+			workspaceSlug: "panfleet",
+		});
 		expect(result).not.toBeNull();
 		expect(result?.type).toBe("issue.assigned_to_bot");
-	});
-
-	it("returns null when issue is not assigned to bot", () => {
-		const env: PlaneWebhookEnvelope = {
-			event: "issue",
-			action: "updated",
-			data: fakeIssue({ assignees: [OTHER] }),
-		};
-		expect(translatePayload(env, ctx)).toBeNull();
-	});
-
-	it("drops comment events in POC (no multi-turn)", () => {
-		const env: PlaneWebhookEnvelope = {
-			event: "issue_comment",
-			action: "created",
-			data: { id: "c-1", issue: "i-1", actor: OTHER, comment_html: "hi" },
-		};
-		expect(translatePayload(env, ctx)).toBeNull();
+		if (result?.type === "issue.assigned_to_bot") {
+			expect(result.issue.name).toBe("Prueba webhook");
+			expect(result.projectId).toBe("35502ab9-d5b6-4397-9917-732a69eb9dd4");
+			expect(result.workspaceSlug).toBe("panfleet");
+			// activity.actor is the user who made the change (kevin), not the bot
+			expect(result.actor.email).toBe("kevin.soesto@gmail.com");
+		}
 	});
 });
+
+describe("wasJustAssignedToBot", () => {
+	it("true when bot is in new_value and not in old_value", () => {
+		expect(
+			wasJustAssignedToBot(
+				{
+					field: "assignee_ids",
+					new_value: [BOT, OTHER],
+					old_value: [OTHER],
+					actor: stubActor(),
+					old_identifier: null,
+					new_identifier: null,
+				},
+				BOT,
+			),
+		).toBe(true);
+	});
+
+	it("false when bot was already assigned (no change for the bot)", () => {
+		expect(
+			wasJustAssignedToBot(
+				{
+					field: "assignee_ids",
+					new_value: [BOT, OTHER],
+					old_value: [BOT],
+					actor: stubActor(),
+					old_identifier: null,
+					new_identifier: null,
+				},
+				BOT,
+			),
+		).toBe(false);
+	});
+
+	it("false when the diff is for a different field", () => {
+		expect(
+			wasJustAssignedToBot(
+				{
+					field: "labels",
+					new_value: ["label-1"],
+					old_value: [],
+					actor: stubActor(),
+					old_identifier: null,
+					new_identifier: null,
+				},
+				BOT,
+			),
+		).toBe(false);
+	});
+
+	it("false when activity is undefined", () => {
+		expect(wasJustAssignedToBot(undefined, BOT)).toBe(false);
+	});
+});
+
+function stubActor() {
+	return {
+		id: "stub",
+		email: "stub@example.com",
+		first_name: "Stub",
+		last_name: "Actor",
+		display_name: "stub",
+		avatar: "",
+		avatar_url: null,
+	};
+}
