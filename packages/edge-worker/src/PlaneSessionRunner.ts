@@ -31,6 +31,7 @@ import { escapeHtml } from "./plane-html-utils.js";
 
 export type ClaudeRunnerHandle = EventEmitter & {
 	start: (prompt: string) => Promise<unknown>;
+	stop?: () => void | Promise<void>;
 };
 
 export type ClaudeRunnerFactory = (
@@ -51,6 +52,7 @@ export class PlaneSessionRunner {
 	private readonly claudeRunnerFactory: ClaudeRunnerFactory;
 	private readonly cyrusHome: string;
 	private readonly logger: ILogger;
+	private readonly active: Set<ClaudeRunnerHandle> = new Set();
 
 	constructor(config: PlaneSessionRunnerConfig) {
 		this.gitService = config.gitService;
@@ -123,21 +125,41 @@ export class PlaneSessionRunner {
 			allowedTools: repo.allowedTools,
 			disallowedTools: repo.disallowedTools,
 		});
+		this.active.add(runnerHandle);
 
 		runnerHandle.on("message", (m: SDKMessage) => poster.handleMessage(m));
 		runnerHandle.on("error", (e: Error) => poster.handleError(e));
+		runnerHandle.on("complete", () => poster.handleComplete());
 
-		await new Promise<void>((resolve) => {
-			runnerHandle.once("complete", () => resolve());
-			runnerHandle.start("").catch((err) => {
-				const msg = err instanceof Error ? err.message : String(err);
-				this.logger.error(`ClaudeRunner.start failed for ${issueId}: ${msg}`);
-				poster.handleError(err instanceof Error ? err : new Error(msg));
-				resolve();
+		try {
+			await new Promise<void>((resolve) => {
+				runnerHandle.once("complete", () => resolve());
+				runnerHandle.start("").catch((err) => {
+					const msg = err instanceof Error ? err.message : String(err);
+					this.logger.error(`ClaudeRunner.start failed for ${issueId}: ${msg}`);
+					poster.handleError(err instanceof Error ? err : new Error(msg));
+					resolve();
+				});
 			});
-		});
+			await poster.flush();
+		} finally {
+			this.active.delete(runnerHandle);
+		}
+	}
 
-		await poster.flush();
+	async stop(): Promise<void> {
+		for (const runner of this.active) {
+			if (typeof runner.stop === "function") {
+				try {
+					await runner.stop();
+				} catch (err) {
+					this.logger.error(
+						`PlaneSessionRunner.stop: runner stop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			}
+		}
+		this.active.clear();
 	}
 
 	private async tryComment(

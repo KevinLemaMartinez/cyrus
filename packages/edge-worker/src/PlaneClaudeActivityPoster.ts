@@ -41,6 +41,7 @@ export class PlaneClaudeActivityPoster {
 	 */
 	private queue: Promise<void> = Promise.resolve();
 	private lastAssistantText: string = "";
+	private resultPosted: boolean = false;
 
 	constructor(config: PlaneClaudeActivityPosterConfig) {
 		this.postComment = config.postComment;
@@ -160,7 +161,21 @@ export class PlaneClaudeActivityPoster {
 			(message as unknown as { result?: unknown }).result ??
 			this.lastAssistantText;
 		const text = typeof final === "string" ? final : this.lastAssistantText;
+		this.resultPosted = true;
 		return [`<p>✅ Sesión completada</p><p>${escapeHtml(text)}</p>`];
+	}
+
+	/**
+	 * Safety net: ensures a final "✅ Sesión completada" comment is posted
+	 * even when the SDK does not emit a SDKResultMessage. Idempotent — if
+	 * `handleMessage` already saw the result message, this is a no-op.
+	 */
+	handleComplete(): void {
+		if (this.resultPosted) return;
+		this.resultPosted = true;
+		this.enqueue(
+			`<p>✅ Sesión completada</p><p>${escapeHtml(this.lastAssistantText)}</p>`,
+		);
 	}
 }
 

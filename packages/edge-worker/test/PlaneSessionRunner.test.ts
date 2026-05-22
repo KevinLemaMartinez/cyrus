@@ -172,6 +172,28 @@ describe("PlaneSessionRunner", () => {
 		expect(shim.branchName).not.toMatch(/[!()`~^:?*\\[\]\s]/);
 	});
 
+	it("PlaneSessionRunner.stop() calls stop() on every in-flight runner", async () => {
+		// Make the runner's start() hang so the runner stays in `active`.
+		const stopMock = vi.fn();
+		mocks.fakeRunner.start = vi.fn(() => new Promise(() => {})); // never resolves
+		(
+			mocks.fakeRunner as EventEmitter & { stop?: ReturnType<typeof vi.fn> }
+		).stop = stopMock;
+
+		const event = buildAssignmentEvent();
+		const assignmentPromise = runner.handleAssignment(event, buildRepo());
+
+		// Give the pipeline time to spawn the runner.
+		await new Promise((r) => setTimeout(r, 50));
+
+		await runner.stop();
+
+		expect(stopMock).toHaveBeenCalledTimes(1);
+
+		// Don't leave the unresolved promise hanging vitest.
+		void assignmentPromise;
+	});
+
 	it("does not hang when ClaudeRunner.start() rejects", async () => {
 		// Replace the runner's start with one that rejects synchronously.
 		mocks.fakeRunner.start = vi.fn(async () => {

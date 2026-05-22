@@ -2630,6 +2630,21 @@ ${taskSection}`;
 			}
 		}
 
+		// Stop any in-flight Plane session runners so SIGTERM / restart doesn't
+		// leave orphaned Plane sessions running.
+		if (this.planeSessionRunner) {
+			try {
+				await this.planeSessionRunner.stop();
+			} catch (err) {
+				this.logger.error(
+					`Plane session runner stop failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+		this.planeEventTransport = null;
+		this.planeIssueTracker = null;
+		this.planeSessionRunner = null;
+
 		// Clear event transport (no explicit cleanup needed, routes are removed when server stops)
 		this.linearEventTransport = null;
 		this.configUpdater = null;

@@ -189,4 +189,24 @@ describe("PlaneClaudeActivityPoster", () => {
 		await poster.flush();
 		expect(calls).toEqual(["<p>❌ Error de Claude: claude exploded</p>"]);
 	});
+
+	it("handleComplete posts a final comment even when no SDKResultMessage was seen", async () => {
+		const poster = makePoster(postComment);
+		poster.handleMessage(assistantTextMessage("partial result"));
+		poster.handleComplete();
+		await poster.flush();
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toContain("✅ Sesión completada");
+		expect(calls[1]).toContain("partial result");
+	});
+
+	it("handleComplete is idempotent when SDKResultMessage was already processed", async () => {
+		const poster = makePoster(postComment);
+		poster.handleMessage(assistantTextMessage("all done"));
+		poster.handleMessage(resultMessage("all done"));
+		poster.handleComplete(); // should be a no-op
+		await poster.flush();
+		// assistant text + result final comment, NOT a third one.
+		expect(calls).toHaveLength(2);
+	});
 });
