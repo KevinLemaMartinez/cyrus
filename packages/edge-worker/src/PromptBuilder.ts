@@ -536,6 +536,12 @@ export class PromptBuilder {
 				continue;
 			}
 
+			// Plane-only (and other non-Linear) repos have no workspace bucket
+			// in Linear routing context — skip them rather than throwing.
+			if (!repository.linearWorkspaceId) {
+				continue;
+			}
+
 			// Keep a stable per-workspace bucket as we scan configured repositories.
 			const workspaceId = requireLinearWorkspaceId(repository);
 			const repositories = activeRepositoriesByWorkspace.get(workspaceId) ?? [];
