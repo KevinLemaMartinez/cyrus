@@ -115,7 +115,7 @@ describe("PlaneSessionRunner", () => {
 		expect(mocks.planeIssueTracker.createComment).toHaveBeenCalledWith(
 			ISSUE_ID,
 			PROJECT_ID,
-			expect.stringContaining("Recibí la asignación"),
+			expect.stringContaining("He recibido la asignación"),
 		);
 
 		// 2. Worktree was created with a MinimalIssue.

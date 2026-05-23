@@ -79,7 +79,7 @@ export class PlaneSessionRunner {
 			await this.planeIssueTracker.createComment(
 				issueId,
 				projectId,
-				"<p>👋 Recibí la asignación, arrancando…</p>",
+				"<p>👋 He recibido la asignación, arrancando…</p>",
 			);
 		} catch (err) {
 			this.logger.error(
@@ -114,7 +114,8 @@ export class PlaneSessionRunner {
 		const description =
 			event.issue.description_stripped ??
 			stripHtml(event.issue.description_html ?? "");
-		const systemPrompt = `Sos @builder. Estás trabajando en el issue "${event.issue.name}". Descripción:\n${description}\n\nImplementá lo pedido, commiteá y abrí un PR a origin/main.`;
+		const systemPrompt = `Eres @builder, un agente que implementa issues asignados. Trabajas en una rama dedicada al issue, haces los cambios pedidos, commiteas y abres un PR contra origin/main.`;
+		const userPrompt = `Issue "${event.issue.name}":\n\n${description || "(sin descripción)"}\n\nImplementa lo pedido, commitea y abre un PR.`;
 
 		const runnerHandle = this.claudeRunnerFactory({
 			workingDirectory: workspace.path,
@@ -124,6 +125,11 @@ export class PlaneSessionRunner {
 			fallbackModel: repo.fallbackModel,
 			allowedTools: repo.allowedTools,
 			disallowedTools: repo.disallowedTools,
+			// POC: bypass interactive permission prompts so Claude can
+			// Edit/Write/Bash without a human approver. The worktree is
+			// isolated and per-issue, and home-dir reads are still denied
+			// via disallowedTools.
+			extraArgs: { "dangerously-skip-permissions": null },
 		});
 		this.active.add(runnerHandle);
 
@@ -134,7 +140,7 @@ export class PlaneSessionRunner {
 		try {
 			await new Promise<void>((resolve) => {
 				runnerHandle.once("complete", () => resolve());
-				runnerHandle.start("").catch((err) => {
+				runnerHandle.start(userPrompt).catch((err) => {
 					const msg = err instanceof Error ? err.message : String(err);
 					this.logger.error(`ClaudeRunner.start failed for ${issueId}: ${msg}`);
 					poster.handleError(err instanceof Error ? err : new Error(msg));
