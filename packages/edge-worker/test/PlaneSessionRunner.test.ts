@@ -1,12 +1,17 @@
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RepositoryConfig } from "cyrus-core";
 import type {
 	PlaneAgentEvent,
+	PlaneIssueRef,
 	PlaneIssueTrackerService,
 } from "cyrus-plane-event-transport";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitService } from "../src/GitService.js";
 import { PlaneSessionRunner } from "../src/PlaneSessionRunner.js";
+import { PlaneSessionStore } from "../src/PlaneSessionStore.js";
 
 const PROJECT_ID = "35502ab9-d5b6-4397-9917-732a69eb9dd4";
 const ISSUE_ID = "a0f19eec-e6fd-414b-b5a0-57f14e13f043";
@@ -55,6 +60,63 @@ function buildAssignmentEvent(): Extract<
 	};
 }
 
+function buildCommentEvent(): Extract<
+	PlaneAgentEvent,
+	{ type: "comment.created_on_bot_issue" }
+> {
+	return {
+		type: "comment.created_on_bot_issue",
+		issueId: ISSUE_ID,
+		comment: {
+			id: "comment-1",
+			issue: ISSUE_ID,
+			actor: "u1",
+			comment_html: "<p>please also add unit tests</p>",
+			comment_stripped: "please also add unit tests",
+			created_at: "2026-05-24T11:00:00Z",
+			updated_at: "2026-05-24T11:00:00Z",
+		},
+		projectId: PROJECT_ID,
+		workspaceSlug: "panfleet",
+		actor: {
+			id: "u1",
+			email: "",
+			first_name: "",
+			last_name: "",
+			display_name: "",
+			avatar: "",
+			avatar_url: null,
+		},
+	};
+}
+
+function buildFullIssueRef(): PlaneIssueRef {
+	return {
+		id: ISSUE_ID,
+		name: "Add a /health endpoint",
+		description_html: "<p>Return 200 OK and uptime.</p>",
+		description_stripped: "Return 200 OK and uptime.",
+		priority: "medium",
+		project: PROJECT_ID,
+		workspace: "ws1",
+		labels: [],
+		sequence_id: 7,
+		created_by: "u1",
+		updated_by: "u1",
+		created_at: "2026-05-23T10:00:00Z",
+		updated_at: "2026-05-24T11:00:00Z",
+		deleted_at: null,
+		is_draft: false,
+		parent: null,
+		target_date: null,
+		start_date: null,
+		completed_at: null,
+		archived_at: null,
+		state: "s1",
+		assignees: ["bot-uuid"],
+	};
+}
+
 function buildRepo(): RepositoryConfig {
 	return {
 		id: "panfleet",
@@ -66,7 +128,39 @@ function buildRepo(): RepositoryConfig {
 	} as unknown as RepositoryConfig;
 }
 
-function buildMocks() {
+function makeFakeRunner(opts: { sessionId?: string | null } = {}) {
+	const runner = new EventEmitter() as EventEmitter & {
+		start: ReturnType<typeof vi.fn>;
+		startStreaming: ReturnType<typeof vi.fn>;
+		addStreamMessage: ReturnType<typeof vi.fn>;
+		completeStream: ReturnType<typeof vi.fn>;
+		stop?: ReturnType<typeof vi.fn>;
+		isRunning: ReturnType<typeof vi.fn>;
+		supportsStreamingInput: boolean;
+		getSessionInfo: ReturnType<typeof vi.fn>;
+	};
+	const sessionId =
+		opts.sessionId === undefined ? "claude-session-test" : opts.sessionId;
+	runner.start = vi.fn(async () => {
+		setImmediate(() => runner.emit("complete", []));
+		return { sessionId, startedAt: new Date(), isRunning: false };
+	});
+	runner.startStreaming = vi.fn(async () => {
+		setImmediate(() => runner.emit("complete", []));
+		return { sessionId, startedAt: new Date(), isRunning: false };
+	});
+	runner.addStreamMessage = vi.fn();
+	runner.completeStream = vi.fn();
+	runner.stop = vi.fn();
+	runner.isRunning = vi.fn(() => false);
+	runner.supportsStreamingInput = true;
+	runner.getSessionInfo = vi.fn(() =>
+		sessionId === null ? null : { sessionId },
+	);
+	return runner;
+}
+
+function buildMocks(opts: { sessionId?: string | null } = {}) {
 	const gitService = {
 		createGitWorktree: vi.fn(async () => ({
 			path: "/tmp/cyrus-workspaces/PFL-7",
@@ -78,15 +172,7 @@ function buildMocks() {
 		createComment: vi.fn(async () => ({})),
 	} as unknown as PlaneIssueTrackerService;
 
-	const fakeRunner = new EventEmitter() as EventEmitter & {
-		start: ReturnType<typeof vi.fn>;
-	};
-	fakeRunner.start = vi.fn(async () => {
-		// Synchronously fire complete on the next tick.
-		setImmediate(() => fakeRunner.emit("complete", []));
-		return { sessionId: "sess_1", startedAt: new Date(), isRunning: false };
-	});
-
+	const fakeRunner = makeFakeRunner(opts);
 	const claudeRunnerFactory = vi.fn(() => fakeRunner);
 
 	return { gitService, planeIssueTracker, fakeRunner, claudeRunnerFactory };
@@ -95,18 +181,31 @@ function buildMocks() {
 describe("PlaneSessionRunner", () => {
 	let mocks: ReturnType<typeof buildMocks>;
 	let runner: PlaneSessionRunner;
+	let sessionStore: PlaneSessionStore;
+	let tmpHomeDir: string;
 
-	beforeEach(() => {
+	beforeEach(async () => {
+		tmpHomeDir = await mkdtemp(join(tmpdir(), "plane-runner-test-"));
+		sessionStore = new PlaneSessionStore({
+			storePath: join(tmpHomeDir, "sessions.json"),
+		});
+		await sessionStore.load();
+
 		mocks = buildMocks();
 		runner = new PlaneSessionRunner({
 			gitService: mocks.gitService,
 			planeIssueTracker: mocks.planeIssueTracker,
 			claudeRunnerFactory: mocks.claudeRunnerFactory as never,
-			cyrusHome: "/tmp/cyrus-home",
+			sessionStore,
+			cyrusHome: tmpHomeDir,
 		});
 	});
 
-	it("runs the happy path: ack, worktree, ClaudeRunner.start", async () => {
+	afterEach(async () => {
+		await rm(tmpHomeDir, { recursive: true, force: true });
+	});
+
+	it("runs the happy path: ack, worktree, ClaudeRunner.startStreaming", async () => {
 		const event = buildAssignmentEvent();
 		const repo = buildRepo();
 		await runner.handleAssignment(event, repo);
@@ -128,13 +227,14 @@ describe("PlaneSessionRunner", () => {
 		expect(shim.title).toBe("Add a /health endpoint");
 		expect(repos).toEqual([repo]);
 
-		// 3. ClaudeRunner was constructed with the worktree path.
+		// 3. ClaudeRunner was constructed with the worktree path and started via streaming.
 		expect(mocks.claudeRunnerFactory).toHaveBeenCalledTimes(1);
 		const runnerConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
 			.mock.calls[0]![0];
 		expect(runnerConfig.workingDirectory).toBe("/tmp/cyrus-workspaces/PFL-7");
-		expect(runnerConfig.cyrusHome).toBe("/tmp/cyrus-home");
-		expect(mocks.fakeRunner.start).toHaveBeenCalledTimes(1);
+		expect(runnerConfig.cyrusHome).toBe(tmpHomeDir);
+		expect(mocks.fakeRunner.startStreaming).toHaveBeenCalledTimes(1);
+		expect(mocks.fakeRunner.start).not.toHaveBeenCalled();
 	});
 
 	it("posts an error comment and does not start ClaudeRunner when worktree creation fails", async () => {
@@ -173,12 +273,8 @@ describe("PlaneSessionRunner", () => {
 	});
 
 	it("PlaneSessionRunner.stop() calls stop() on every in-flight runner", async () => {
-		// Make the runner's start() hang so the runner stays in `active`.
-		const stopMock = vi.fn();
-		mocks.fakeRunner.start = vi.fn(() => new Promise(() => {})); // never resolves
-		(
-			mocks.fakeRunner as EventEmitter & { stop?: ReturnType<typeof vi.fn> }
-		).stop = stopMock;
+		// Make the runner's startStreaming() hang so the runner stays in `active`.
+		mocks.fakeRunner.startStreaming = vi.fn(() => new Promise(() => {})); // never resolves
 
 		const event = buildAssignmentEvent();
 		const assignmentPromise = runner.handleAssignment(event, buildRepo());
@@ -188,21 +284,19 @@ describe("PlaneSessionRunner", () => {
 
 		await runner.stop();
 
-		expect(stopMock).toHaveBeenCalledTimes(1);
+		expect(mocks.fakeRunner.stop).toHaveBeenCalledTimes(1);
 
 		// Don't leave the unresolved promise hanging vitest.
 		void assignmentPromise;
 	});
 
-	it("does not hang when ClaudeRunner.start() rejects", async () => {
-		// Replace the runner's start with one that rejects synchronously.
-		mocks.fakeRunner.start = vi.fn(async () => {
+	it("does not hang when ClaudeRunner.startStreaming() rejects", async () => {
+		mocks.fakeRunner.startStreaming = vi.fn(async () => {
 			throw new Error("Claude session already running");
 		});
 
 		const event = buildAssignmentEvent();
 
-		// If the runner hangs, this will fail under vitest's default 5s timeout.
 		const timedOut = new Promise<"timeout">((resolve) =>
 			setTimeout(() => resolve("timeout"), 2000),
 		);
@@ -221,5 +315,99 @@ describe("PlaneSessionRunner", () => {
 		).mock.calls;
 		expect(calls[1]![2]).toContain("Error de Claude");
 		expect(calls[1]![2]).toContain("Claude session already running");
+	});
+
+	it("persists the Claude session id in PlaneSessionStore after complete", async () => {
+		mocks.fakeRunner.getSessionInfo = vi.fn(() => ({
+			sessionId: "claude-session-XYZ",
+		}));
+		const event = buildAssignmentEvent();
+		await runner.handleAssignment(event, buildRepo());
+		const stored = sessionStore.get(ISSUE_ID);
+		expect(stored?.claudeSessionId).toBe("claude-session-XYZ");
+		expect(stored?.projectId).toBe(PROJECT_ID);
+		expect(stored?.workspaceSlug).toBe("panfleet");
+	});
+
+	it("respects repo.planeBypassPermissions=false (no extraArgs flag)", async () => {
+		await runner.handleAssignment(buildAssignmentEvent(), {
+			...buildRepo(),
+			planeBypassPermissions: false,
+		});
+		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
+			.mock.calls[0]![0] as { extraArgs?: Record<string, unknown> };
+		expect(passedConfig.extraArgs).toEqual({});
+	});
+
+	it("respects repo.planeMaxTurns when set", async () => {
+		await runner.handleAssignment(buildAssignmentEvent(), {
+			...buildRepo(),
+			planeMaxTurns: 7,
+		});
+		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
+			.mock.calls[0]![0] as { maxTurns?: number };
+		expect(passedConfig.maxTurns).toBe(7);
+	});
+
+	it("defaults maxTurns to 40 when repo.planeMaxTurns is not set", async () => {
+		await runner.handleAssignment(buildAssignmentEvent(), buildRepo());
+		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
+			.mock.calls[0]![0] as { maxTurns?: number };
+		expect(passedConfig.maxTurns).toBe(40);
+	});
+
+	describe("handleComment", () => {
+		it("addStreamMessage on the live runner when one exists for the issue", async () => {
+			mocks.fakeRunner.isRunning = vi.fn(() => true);
+			// Inject a live runner for issue-1 without going through handleAssignment.
+			(runner as unknown as { active: Map<string, unknown> }).active.set(
+				ISSUE_ID,
+				mocks.fakeRunner,
+			);
+			await runner.handleComment(
+				buildCommentEvent(),
+				buildRepo(),
+				buildFullIssueRef(),
+			);
+			expect(mocks.fakeRunner.addStreamMessage).toHaveBeenCalledWith(
+				expect.stringContaining("please also add unit tests"),
+			);
+			// startStreaming should not be called — we used the live runner.
+			expect(mocks.fakeRunner.startStreaming).not.toHaveBeenCalled();
+		});
+
+		it("spawns a new runner with resumeSessionId when no live runner but session id is stored", async () => {
+			await sessionStore.set(ISSUE_ID, {
+				claudeSessionId: "claude-session-prev",
+				projectId: PROJECT_ID,
+				workspaceSlug: "panfleet",
+				updatedAt: Date.now(),
+			});
+			await runner.handleComment(
+				buildCommentEvent(),
+				buildRepo(),
+				buildFullIssueRef(),
+			);
+			expect(mocks.claudeRunnerFactory).toHaveBeenCalledTimes(1);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as { resumeSessionId?: string };
+			expect(passedConfig.resumeSessionId).toBe("claude-session-prev");
+			expect(mocks.fakeRunner.startStreaming).toHaveBeenCalled();
+		});
+
+		it("posts 'reassign to start' and does not spawn when no prior session exists", async () => {
+			await runner.handleComment(
+				buildCommentEvent(),
+				buildRepo(),
+				buildFullIssueRef(),
+			);
+			expect(mocks.claudeRunnerFactory).not.toHaveBeenCalled();
+			expect(mocks.planeIssueTracker.createComment).toHaveBeenCalledWith(
+				ISSUE_ID,
+				PROJECT_ID,
+				expect.stringMatching(/vuélveme a asignar/i),
+			);
+		});
 	});
 });

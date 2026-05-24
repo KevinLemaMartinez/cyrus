@@ -138,6 +138,7 @@ import {
 import {
 	type PlaneAgentEvent,
 	PlaneEventTransport,
+	type PlaneIssueRef,
 	PlaneIssueTrackerService,
 } from "cyrus-plane-event-transport";
 import {
@@ -158,6 +159,7 @@ import { GitService } from "./GitService.js";
 import { GlobalSessionRegistry } from "./GlobalSessionRegistry.js";
 import { McpConfigService } from "./McpConfigService.js";
 import { PlaneSessionRunner } from "./PlaneSessionRunner.js";
+import { PlaneSessionStore } from "./PlaneSessionStore.js";
 import { PromptBuilder } from "./PromptBuilder.js";
 import type {
 	IssueContextResult,
@@ -222,6 +224,7 @@ export class EdgeWorker extends EventEmitter {
 	private planeEventTransport: PlaneEventTransport | null = null;
 	private planeIssueTracker: PlaneIssueTrackerService | null = null;
 	private planeSessionRunner: PlaneSessionRunner | null = null;
+	private planeSessionStore: PlaneSessionStore | null = null;
 	private chatSessionHandler: ChatSessionHandler<SlackWebhookEvent> | null =
 		null;
 	private gitHubCommentService: GitHubCommentService; // Service for posting comments back to GitHub PRs
@@ -1032,10 +1035,23 @@ export class EdgeWorker extends EventEmitter {
 		this.planeIssueTracker = new PlaneIssueTrackerService(planeCfg);
 		this.planeEventTransport = new PlaneEventTransport(planeCfg);
 
+		const sessionStore = new PlaneSessionStore({
+			storePath: join(this.cyrusHome, "plane-sessions.json"),
+		});
+		// load() resolves asynchronously; we kick it off here and don't block
+		// transport registration — the store starts empty until load resolves.
+		sessionStore.load().catch((err) => {
+			this.logger.warn(
+				`PlaneSessionStore.load failed (continuing empty): ${err instanceof Error ? err.message : String(err)}`,
+			);
+		});
+		this.planeSessionStore = sessionStore;
+
 		this.planeSessionRunner = new PlaneSessionRunner({
 			gitService: this.gitService,
 			planeIssueTracker: this.planeIssueTracker,
 			claudeRunnerFactory: (config) => new ClaudeRunner(config),
+			sessionStore,
 			cyrusHome: this.cyrusHome,
 			logger: this.logger,
 		});
@@ -1061,37 +1077,104 @@ export class EdgeWorker extends EventEmitter {
 	/**
 	 * Dispatch a verified Plane agent event to the right handler.
 	 *
-	 * - "issue.assigned_to_bot" → look up the repo by planeProjectId and
-	 *   call PlaneSessionRunner.handleAssignment.
-	 * - "comment.created_on_bot_issue" → POC: log and ignore.
+	 * - "issue.assigned_to_bot" → look up the repo by planeProjectId,
+	 *   apply the optional planeAgentLabelIds filter, and call
+	 *   PlaneSessionRunner.handleAssignment.
+	 * - "comment.created_on_bot_issue" → fetch the parent issue (the
+	 *   webhook does not expand it), confirm the bot is an assignee,
+	 *   apply the label filter, and call PlaneSessionRunner.handleComment.
 	 */
 	private async handlePlaneEvent(event: PlaneAgentEvent): Promise<void> {
+		if (event.type === "issue.assigned_to_bot") {
+			const repo = Array.from(this.repositories.values()).find(
+				(r) => r.planeProjectId === event.projectId,
+			);
+			if (!repo) {
+				this.logger.warn(
+					`No repository configured with planeProjectId=${event.projectId} — dropping event`,
+				);
+				return;
+			}
+			if (!matchesPlaneLabelFilter(event.issue.labels, repo)) {
+				this.logger.info(
+					`Plane assignment dropped for issue ${event.issue.id}: labels do not match planeAgentLabelIds`,
+				);
+				return;
+			}
+			if (!this.planeSessionRunner) {
+				this.logger.warn(
+					"Plane session runner is not initialized — dropping event",
+				);
+				return;
+			}
+			await this.planeSessionRunner.handleAssignment(event, repo);
+			return;
+		}
+
 		if (event.type === "comment.created_on_bot_issue") {
-			this.logger.info(
-				`Plane comment event ignored in POC (issue=${event.issueId})`,
+			if (
+				!this.planeIssueTracker ||
+				!this.planeSessionRunner ||
+				!this.planeSessionStore
+			) {
+				this.logger.warn(
+					"Plane tracker/runner/store not initialized — dropping comment event",
+				);
+				return;
+			}
+
+			// The comment webhook doesn't carry projectId. Try each configured
+			// Plane repo's projectId until fetchIssue resolves (404 → next).
+			let fullIssue: PlaneIssueRef | null = null;
+			let repoForComment: RepositoryConfig | null = null;
+			for (const r of this.repositories.values()) {
+				if (!r.planeProjectId) continue;
+				try {
+					const candidate = await this.planeIssueTracker.fetchIssue(
+						event.issueId,
+						r.planeProjectId,
+					);
+					fullIssue = candidate;
+					repoForComment = r;
+					break;
+				} catch (err) {
+					this.logger.debug(
+						`fetchIssue(${event.issueId}, ${r.planeProjectId}) failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			}
+			if (!fullIssue || !repoForComment) {
+				this.logger.warn(
+					`Plane comment on ${event.issueId}: could not resolve to any configured planeProjectId — dropping`,
+				);
+				return;
+			}
+
+			const botUserId = process.env.PLANE_BOT_USER_ID ?? "";
+			if (botUserId && !fullIssue.assignees.includes(botUserId)) {
+				this.logger.info(
+					`Plane comment on ${event.issueId} dropped: bot not in assignees`,
+				);
+				return;
+			}
+
+			if (!matchesPlaneLabelFilter(fullIssue.labels, repoForComment)) {
+				this.logger.info(
+					`Plane comment dropped for issue ${event.issueId}: labels do not match planeAgentLabelIds`,
+				);
+				return;
+			}
+
+			const eventWithProject = {
+				...event,
+				projectId: fullIssue.project,
+			};
+			await this.planeSessionRunner.handleComment(
+				eventWithProject,
+				repoForComment,
+				fullIssue,
 			);
-			return;
 		}
-
-		const repo = Array.from(this.repositories.values()).find(
-			(r) => r.planeProjectId === event.projectId,
-		);
-
-		if (!repo) {
-			this.logger.warn(
-				`No repository configured with planeProjectId=${event.projectId} — dropping event`,
-			);
-			return;
-		}
-
-		if (!this.planeSessionRunner) {
-			this.logger.warn(
-				"Plane session runner is not initialized — dropping event",
-			);
-			return;
-		}
-
-		await this.planeSessionRunner.handleAssignment(event, repo);
 	}
 
 	/**
@@ -2644,6 +2727,7 @@ ${taskSection}`;
 		this.planeEventTransport = null;
 		this.planeIssueTracker = null;
 		this.planeSessionRunner = null;
+		this.planeSessionStore = null;
 
 		// Clear event transport (no explicit cleanup needed, routes are removed when server stops)
 		this.linearEventTransport = null;
@@ -7430,4 +7514,18 @@ ${input.userComment}
 			this.logger.error("Failed to save OAuth tokens:", error);
 		}
 	}
+}
+
+/**
+ * Apply the per-repo planeAgentLabelIds opt-in filter to a Plane issue.
+ *
+ * Returns true if the repo has no filter configured (empty/undefined) or if
+ * the issue has at least one of the configured label UUIDs. Otherwise false.
+ */
+function matchesPlaneLabelFilter(
+	issueLabels: string[],
+	repo: RepositoryConfig,
+): boolean {
+	if (!repo.planeAgentLabelIds?.length) return true;
+	return issueLabels.some((id) => repo.planeAgentLabelIds!.includes(id));
 }
