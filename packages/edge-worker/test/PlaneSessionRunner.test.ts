@@ -329,14 +329,26 @@ describe("PlaneSessionRunner", () => {
 		expect(stored?.workspaceSlug).toBe("panfleet");
 	});
 
-	it("respects repo.planeBypassPermissions=false (no extraArgs flag)", async () => {
+	it("respects repo.planeBypassPermissions=false (no dangerously-skip-permissions flag)", async () => {
 		await runner.handleAssignment(buildAssignmentEvent(), {
 			...buildRepo(),
 			planeBypassPermissions: false,
 		});
 		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
 			.mock.calls[0]![0] as { extraArgs?: Record<string, unknown> };
-		expect(passedConfig.extraArgs).toEqual({});
+		expect(passedConfig.extraArgs).not.toHaveProperty(
+			"dangerously-skip-permissions",
+		);
+	});
+
+	it("always wires remote-control extraArgs (Claude.ai observability)", async () => {
+		await runner.handleAssignment(buildAssignmentEvent(), buildRepo());
+		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
+			.mock.calls[0]![0] as { extraArgs?: Record<string, unknown> };
+		expect(passedConfig.extraArgs).toMatchObject({
+			"remote-control": null,
+			"remote-control-session-name-prefix": "cyrus-plane-panfleet",
+		});
 	});
 
 	it("respects repo.planeMaxTurns when set", async () => {

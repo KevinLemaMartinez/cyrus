@@ -273,9 +273,16 @@ export class PlaneSessionRunner {
 		});
 
 		const bypassPermissions = repo.planeBypassPermissions ?? true;
-		const extraArgs: Record<string, string | null> = bypassPermissions
-			? { "dangerously-skip-permissions": null }
-			: {};
+		const extraArgs: Record<string, string | null> = {
+			...(bypassPermissions ? { "dangerously-skip-permissions": null } : {}),
+			// Surface each Plane-driven session in claude.ai under the cyrus
+			// OAuth account so the operator can observe runs remotely. The
+			// flag is documented as "interactive" in the CLI help, but the
+			// SDK forwards it in --print mode too — if the binary ignores it
+			// the session continues normally with no remote visibility.
+			"remote-control": null,
+			"remote-control-session-name-prefix": `cyrus-plane-${repo.id}`,
+		};
 
 		const systemPrompt = buildSystemPrompt();
 
