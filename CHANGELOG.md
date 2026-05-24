@@ -9,10 +9,13 @@ All notable changes to this project will be documented in this file.
 - Plane comments now feed into the active Claude session (or resume the previous one when no runner is live), giving the Plane rail multi-turn parity with the Linear flow.
 - Per-repo `planeAgentLabelIds` (UUID list) to gate which Plane issues the bot acts on. When omitted or empty, any assigned issue triggers, matching the previous behaviour.
 - Per-repo `planeMaxTurns` (defaults to 40) to cap a single Plane session.
+- **Multi-bot support on the Plane rail.** A repo with `planeProjectId` now requires a `planeBots[]` array. Each entry is a distinct Plane user (`role`, `userId`, `token`, `systemPrompt`, optional `allowedTools`, `disallowedTools`, `mcpConfigPath`, `maxTurns`, `bypassPermissions`). The bot whose `userId` is in the issue's assignees runs the session; comments come back authored by that bot. The first concrete second role is `designer` — typically wired with the Figma MCP and a disallow-list that blocks code edits, so it works in Figma and posts comments without opening PRs.
 
 ### Changed
 
-- The Plane rail's `dangerously-skip-permissions` flag is no longer hardcoded. It is now controlled by the per-repo `planeBypassPermissions` setting (default `true`). Set it to `false` only when the repo has an exhaustive `allowedTools` list — the runner has no interactive permission handler for Plane and would otherwise hang.
+- The Plane rail's `dangerously-skip-permissions` flag is no longer hardcoded. It is now controlled by `planeBots[].bypassPermissions` (default `true`). Set it to `false` only when the bot has an exhaustive `allowedTools` list — the runner has no interactive permission handler for Plane and would otherwise hang.
+- **Plane single-bot env vars `PLANE_BOT_USER_ID` and `PLANE_BOT_TOKEN` are no longer read.** Configure each bot in `planeBots[]` instead. `PLANE_BASE_URL`, `PLANE_WORKSPACE_SLUG`, and `PLANE_WEBHOOK_SECRET` continue to be read from the environment. The legacy vars are warn-ignored at startup so operators can clean their `.env` after migrating.
+- The deprecated `planeBypassPermissions` and `planeMaxTurns` repo-level fields are still parsed for backwards compatibility but are no longer applied at runtime; use the same-named bot-level fields instead.
 
 ## [0.2.57] - 2026-05-22
 
