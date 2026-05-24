@@ -257,6 +257,38 @@ const PromptDefaultsSchema = z.object({
  * Configuration for a Linear workspace's credentials.
  * Keyed by workspace ID in EdgeConfig.linearWorkspaces.
  */
+/**
+ * Per-bot configuration for Plane CE. A repository routed from Plane lists
+ * one or more bots in `planeBots[]`; each bot is its own Plane user with its
+ * own API token, system prompt, tools, and MCP servers. The bot is resolved
+ * from the issue's `assignees` at webhook time.
+ */
+export const PlaneBotConfigSchema = z.object({
+	/** Role identifier. Drives no behavior on its own — config fields do. Useful for logging and operator clarity. */
+	role: z.enum(["builder", "designer"]),
+	/** UUID of the Plane user backing this bot. */
+	userId: z.string().uuid(),
+	/** Plane API token of the bot user. Used as `X-API-KEY` when posting comments authored by this bot. */
+	token: z.string().min(1),
+	/** System prompt passed to the Claude runner for sessions handled by this bot. */
+	systemPrompt: z.string().min(1),
+	/** Allowed-tools list for the Claude runner. Falls back to runner defaults if undefined. */
+	allowedTools: z.array(z.string()).optional(),
+	/** Disallowed-tools list for the Claude runner. */
+	disallowedTools: z.array(z.string()).optional(),
+	/** Path to the MCP config JSON for this bot (e.g. Plane + Figma for @designer, Plane only for @builder). */
+	mcpConfigPath: z.string().optional(),
+	/** Max turns for a session run by this bot. Defaults to 40 if undefined. */
+	maxTurns: z.number().int().positive().optional(),
+	/**
+	 * If true (default), PlaneSessionRunner passes `--dangerously-skip-permissions` so
+	 * Edit/Write/Bash do not require an interactive approver. Set to false only when
+	 * `allowedTools` is exhaustive — Plane has no `onAskUserQuestion` wiring, so a
+	 * permission prompt would hang the runner.
+	 */
+	bypassPermissions: z.boolean().optional(),
+});
+
 export const LinearWorkspaceConfigSchema = z.object({
 	linearToken: z.string(),
 	linearRefreshToken: z.string().optional(),
@@ -295,17 +327,29 @@ export const RepositoryConfigSchema = z.object({
 	 */
 	planeAgentLabelIds: z.array(z.string().uuid()).optional(),
 	/**
-	 * If true (default), PlaneSessionRunner passes
-	 * `--dangerously-skip-permissions` to the Claude runner so that Edit/Write/
-	 * Bash do not require an interactive approver. Set to false ONLY if the
-	 * repo has an exhaustive `allowedTools` list — Plane has no
-	 * `onAskUserQuestion` wiring, so a permission prompt would hang the runner.
+	 * Per-bot configuration. Required when `planeProjectId` is set.
+	 * Validated cross-repo (no duplicate `userId` across all repos) by
+	 * `EdgeWorker.validatePlaneConfig()` at startup.
 	 */
+	planeBots: z
+		.array(PlaneBotConfigSchema)
+		.optional()
+		.superRefine((bots, ctx) => {
+			if (!bots) return;
+			const seen = new Set<string>();
+			for (const b of bots) {
+				if (seen.has(b.userId)) {
+					ctx.addIssue({
+						code: z.ZodIssueCode.custom,
+						message: `Duplicate planeBots userId: ${b.userId}`,
+					});
+				}
+				seen.add(b.userId);
+			}
+		}),
+	/** @deprecated Use `planeBots[].bypassPermissions` instead. Kept so existing configs parse; runtime ignores it. */
 	planeBypassPermissions: z.boolean().optional(),
-	/**
-	 * Max turns for a single Plane session (passed to ClaudeRunnerConfig).
-	 * Defaults to 40 when omitted.
-	 */
+	/** @deprecated Use `planeBots[].maxTurns` instead. Kept so existing configs parse; runtime ignores it. */
 	planeMaxTurns: z.number().int().positive().optional(),
 
 	/** @deprecated Use EdgeConfig.linearWorkspaces[workspaceId].linearToken */
@@ -610,6 +654,7 @@ export type UserAccessControlConfig = z.infer<
 	typeof UserAccessControlConfigSchema
 >;
 export type LinearWorkspaceConfig = z.infer<typeof LinearWorkspaceConfigSchema>;
+export type PlaneBotConfig = z.infer<typeof PlaneBotConfigSchema>;
 export type RepositoryConfig = z.infer<typeof RepositoryConfigSchema>;
 export type EdgeConfig = z.infer<typeof EdgeConfigSchema>;
 export type SandboxConfig = z.infer<typeof SandboxConfigSchema>;

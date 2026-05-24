@@ -55,6 +55,56 @@
 				"pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
 			}
 		},
+		"planeBots": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"role": {
+						"type": "string",
+						"enum": ["builder", "designer"]
+					},
+					"userId": {
+						"type": "string",
+						"format": "uuid",
+						"pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+					},
+					"token": {
+						"type": "string",
+						"minLength": 1
+					},
+					"systemPrompt": {
+						"type": "string",
+						"minLength": 1
+					},
+					"allowedTools": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"disallowedTools": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"mcpConfigPath": {
+						"type": "string"
+					},
+					"maxTurns": {
+						"type": "integer",
+						"exclusiveMinimum": 0,
+						"maximum": 9007199254740991
+					},
+					"bypassPermissions": {
+						"type": "boolean"
+					}
+				},
+				"required": ["role", "userId", "token", "systemPrompt"],
+				"additionalProperties": false
+			}
+		},
 		"planeBypassPermissions": {
 			"type": "boolean"
 		},
