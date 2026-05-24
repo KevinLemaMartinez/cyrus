@@ -288,6 +288,25 @@ export const RepositoryConfigSchema = z.object({
 
 	// Plane configuration (optional — set when the repo is routed from a Plane CE project)
 	planeProjectId: z.string().uuid().optional(),
+	/**
+	 * UUIDs of Plane labels that gate the bot. If empty/undefined, any issue
+	 * assigned to the bot triggers a run. If non-empty, only issues containing
+	 * at least one of these labels trigger.
+	 */
+	planeAgentLabelIds: z.array(z.string().uuid()).optional(),
+	/**
+	 * If true (default), PlaneSessionRunner passes
+	 * `--dangerously-skip-permissions` to the Claude runner so that Edit/Write/
+	 * Bash do not require an interactive approver. Set to false ONLY if the
+	 * repo has an exhaustive `allowedTools` list — Plane has no
+	 * `onAskUserQuestion` wiring, so a permission prompt would hang the runner.
+	 */
+	planeBypassPermissions: z.boolean().optional(),
+	/**
+	 * Max turns for a single Plane session (passed to ClaudeRunnerConfig).
+	 * Defaults to 40 when omitted.
+	 */
+	planeMaxTurns: z.number().int().positive().optional(),
 
 	/** @deprecated Use EdgeConfig.linearWorkspaces[workspaceId].linearToken */
 	linearToken: z.string().optional(),
