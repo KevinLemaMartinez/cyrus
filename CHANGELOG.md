@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Plane comments now feed into the active Claude session (or resume the previous one when no runner is live), giving the Plane rail multi-turn parity with the Linear flow.
+- Per-repo `planeAgentLabelIds` (UUID list) to gate which Plane issues the bot acts on. When omitted or empty, any assigned issue triggers, matching the previous behaviour.
+- Per-repo `planeMaxTurns` (defaults to 40) to cap a single Plane session.
+
+### Changed
+
+- The Plane rail's `dangerously-skip-permissions` flag is no longer hardcoded. It is now controlled by the per-repo `planeBypassPermissions` setting (default `true`). Set it to `false` only when the repo has an exhaustive `allowedTools` list — the runner has no interactive permission handler for Plane and would otherwise hang.
+
 ## [0.2.57] - 2026-05-22
 
 ### Fixed
