@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RepositoryConfig } from "cyrus-core";
+import type { PlaneBotConfig, RepositoryConfig } from "cyrus-core";
 import type {
 	PlaneAgentEvent,
 	PlaneIssueRef,
@@ -15,6 +15,8 @@ import { PlaneSessionStore } from "../src/PlaneSessionStore.js";
 
 const PROJECT_ID = "35502ab9-d5b6-4397-9917-732a69eb9dd4";
 const ISSUE_ID = "a0f19eec-e6fd-414b-b5a0-57f14e13f043";
+const BUILDER_USER_ID = "3322520e-b959-4cbd-8b7c-929b05e445da";
+const DESIGNER_USER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 function buildAssignmentEvent(): Extract<
 	PlaneAgentEvent,
@@ -113,11 +115,11 @@ function buildFullIssueRef(): PlaneIssueRef {
 		completed_at: null,
 		archived_at: null,
 		state: "s1",
-		assignees: ["bot-uuid"],
+		assignees: [BUILDER_USER_ID],
 	};
 }
 
-function buildRepo(): RepositoryConfig {
+function buildRepo(planeBots?: PlaneBotConfig[]): RepositoryConfig {
 	return {
 		id: "panfleet",
 		name: "panfleet",
@@ -125,7 +127,37 @@ function buildRepo(): RepositoryConfig {
 		baseBranch: "main",
 		workspaceBaseDir: "/tmp/cyrus-workspaces",
 		planeProjectId: PROJECT_ID,
+		...(planeBots ? { planeBots } : {}),
 	} as unknown as RepositoryConfig;
+}
+
+function buildBuilderBot(
+	overrides: Partial<PlaneBotConfig> = {},
+): PlaneBotConfig {
+	return {
+		role: "builder",
+		userId: BUILDER_USER_ID,
+		token: "plane_api_builder",
+		systemPrompt: "You are @builder. You implement issues and open PRs.",
+		...overrides,
+	};
+}
+
+function buildDesignerBot(
+	overrides: Partial<PlaneBotConfig> = {},
+): PlaneBotConfig {
+	return {
+		role: "designer",
+		userId: DESIGNER_USER_ID,
+		token: "plane_api_designer",
+		systemPrompt: "You are @designer. You work on Figma.",
+		allowedTools: ["Read", "mcp__figma__*", "mcp__plane__*"],
+		disallowedTools: ["Edit", "Write", "Bash"],
+		mcpConfigPath: "/home/cyrus/.cyrus/mcp-configs/designer.json",
+		maxTurns: 25,
+		bypassPermissions: true,
+		...overrides,
+	};
 }
 
 function makeFakeRunner(opts: { sessionId?: string | null } = {}) {
@@ -208,13 +240,15 @@ describe("PlaneSessionRunner", () => {
 	it("runs the happy path: ack, worktree, ClaudeRunner.startStreaming", async () => {
 		const event = buildAssignmentEvent();
 		const repo = buildRepo();
-		await runner.handleAssignment(event, repo);
+		const bot = buildBuilderBot();
+		await runner.handleAssignment(event, repo, bot);
 
-		// 1. Acknowledge comment was posted.
+		// 1. Acknowledge comment was posted with the bot's token.
 		expect(mocks.planeIssueTracker.createComment).toHaveBeenCalledWith(
 			ISSUE_ID,
 			PROJECT_ID,
 			expect.stringContaining("He recibido la asignación"),
+			{ tokenOverride: "plane_api_builder" },
 		);
 
 		// 2. Worktree was created with a MinimalIssue.
@@ -242,7 +276,7 @@ describe("PlaneSessionRunner", () => {
 			mocks.gitService.createGitWorktree as ReturnType<typeof vi.fn>
 		).mockRejectedValueOnce(new Error("disk full"));
 		const event = buildAssignmentEvent();
-		await runner.handleAssignment(event, buildRepo());
+		await runner.handleAssignment(event, buildRepo(), buildBuilderBot());
 
 		// Acknowledge + error comment.
 		expect(mocks.planeIssueTracker.createComment).toHaveBeenCalledTimes(2);
@@ -261,7 +295,7 @@ describe("PlaneSessionRunner", () => {
 		event.issue.name = "Add a /health endpoint!! (urgent)";
 		event.issue.sequence_id = 42;
 
-		await runner.handleAssignment(event, buildRepo());
+		await runner.handleAssignment(event, buildRepo(), buildBuilderBot());
 
 		const [shim] = (
 			mocks.gitService.createGitWorktree as ReturnType<typeof vi.fn>
@@ -273,20 +307,21 @@ describe("PlaneSessionRunner", () => {
 	});
 
 	it("PlaneSessionRunner.stop() calls stop() on every in-flight runner", async () => {
-		// Make the runner's startStreaming() hang so the runner stays in `active`.
-		mocks.fakeRunner.startStreaming = vi.fn(() => new Promise(() => {})); // never resolves
+		mocks.fakeRunner.startStreaming = vi.fn(() => new Promise(() => {}));
 
 		const event = buildAssignmentEvent();
-		const assignmentPromise = runner.handleAssignment(event, buildRepo());
+		const assignmentPromise = runner.handleAssignment(
+			event,
+			buildRepo(),
+			buildBuilderBot(),
+		);
 
-		// Give the pipeline time to spawn the runner.
 		await new Promise((r) => setTimeout(r, 50));
 
 		await runner.stop();
 
 		expect(mocks.fakeRunner.stop).toHaveBeenCalledTimes(1);
 
-		// Don't leave the unresolved promise hanging vitest.
 		void assignmentPromise;
 	});
 
@@ -301,14 +336,12 @@ describe("PlaneSessionRunner", () => {
 			setTimeout(() => resolve("timeout"), 2000),
 		);
 		const finished = runner
-			.handleAssignment(event, buildRepo())
+			.handleAssignment(event, buildRepo(), buildBuilderBot())
 			.then(() => "finished" as const);
 		const winner = await Promise.race([finished, timedOut]);
 
 		expect(winner).toBe("finished");
 
-		// The poster should have received the error so a comment is queued.
-		// Acknowledge + error from start rejection = 2 createComment calls.
 		expect(mocks.planeIssueTracker.createComment).toHaveBeenCalledTimes(2);
 		const calls = (
 			mocks.planeIssueTracker.createComment as ReturnType<typeof vi.fn>
@@ -317,61 +350,108 @@ describe("PlaneSessionRunner", () => {
 		expect(calls[1]![2]).toContain("Claude session already running");
 	});
 
-	it("persists the Claude session id in PlaneSessionStore after complete", async () => {
+	it("persists the Claude session id AND botUserId in PlaneSessionStore after complete", async () => {
 		mocks.fakeRunner.getSessionInfo = vi.fn(() => ({
 			sessionId: "claude-session-XYZ",
 		}));
-		const event = buildAssignmentEvent();
-		await runner.handleAssignment(event, buildRepo());
+		const bot = buildDesignerBot();
+		await runner.handleAssignment(buildAssignmentEvent(), buildRepo(), bot);
 		const stored = sessionStore.get(ISSUE_ID);
 		expect(stored?.claudeSessionId).toBe("claude-session-XYZ");
 		expect(stored?.projectId).toBe(PROJECT_ID);
 		expect(stored?.workspaceSlug).toBe("panfleet");
+		expect(stored?.botUserId).toBe(DESIGNER_USER_ID);
 	});
 
-	it("respects repo.planeBypassPermissions=false (no extraArgs flag)", async () => {
-		await runner.handleAssignment(buildAssignmentEvent(), {
-			...buildRepo(),
-			planeBypassPermissions: false,
+	describe("bot-driven config", () => {
+		it("uses bot.systemPrompt (not a hardcoded @builder one)", async () => {
+			const bot = buildDesignerBot();
+			await runner.handleAssignment(buildAssignmentEvent(), buildRepo(), bot);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as { systemPrompt?: string };
+			expect(passedConfig.systemPrompt).toBe(
+				"You are @designer. You work on Figma.",
+			);
 		});
-		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
-			.mock.calls[0]![0] as { extraArgs?: Record<string, unknown> };
-		expect(passedConfig.extraArgs).toEqual({});
-	});
 
-	it("respects repo.planeMaxTurns when set", async () => {
-		await runner.handleAssignment(buildAssignmentEvent(), {
-			...buildRepo(),
-			planeMaxTurns: 7,
+		it("forwards bot.allowedTools and bot.disallowedTools", async () => {
+			const bot = buildDesignerBot();
+			await runner.handleAssignment(buildAssignmentEvent(), buildRepo(), bot);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as {
+				allowedTools?: string[];
+				disallowedTools?: string[];
+			};
+			expect(passedConfig.allowedTools).toEqual([
+				"Read",
+				"mcp__figma__*",
+				"mcp__plane__*",
+			]);
+			expect(passedConfig.disallowedTools).toEqual(["Edit", "Write", "Bash"]);
 		});
-		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
-			.mock.calls[0]![0] as { maxTurns?: number };
-		expect(passedConfig.maxTurns).toBe(7);
-	});
 
-	it("forwards repo.mcpConfigPath to the ClaudeRunner config (Plane MCP wiring)", async () => {
-		await runner.handleAssignment(buildAssignmentEvent(), {
-			...buildRepo(),
-			mcpConfigPath: "/home/cyrus/.cyrus/mcp-configs/plane.json",
+		it("forwards bot.mcpConfigPath (not repo.mcpConfigPath)", async () => {
+			const bot = buildDesignerBot();
+			await runner.handleAssignment(
+				buildAssignmentEvent(),
+				{
+					...buildRepo(),
+					mcpConfigPath: "/should/not/be/used",
+				} as unknown as RepositoryConfig,
+				bot,
+			);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as { mcpConfigPath?: string };
+			expect(passedConfig.mcpConfigPath).toBe(
+				"/home/cyrus/.cyrus/mcp-configs/designer.json",
+			);
 		});
-		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
-			.mock.calls[0]![0] as { mcpConfigPath?: string };
-		expect(passedConfig.mcpConfigPath).toBe(
-			"/home/cyrus/.cyrus/mcp-configs/plane.json",
-		);
-	});
 
-	it("defaults maxTurns to 40 when repo.planeMaxTurns is not set", async () => {
-		await runner.handleAssignment(buildAssignmentEvent(), buildRepo());
-		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
-			.mock.calls[0]![0] as { maxTurns?: number };
-		expect(passedConfig.maxTurns).toBe(40);
+		it("uses bot.maxTurns when set", async () => {
+			const bot = buildDesignerBot({ maxTurns: 7 });
+			await runner.handleAssignment(buildAssignmentEvent(), buildRepo(), bot);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as { maxTurns?: number };
+			expect(passedConfig.maxTurns).toBe(7);
+		});
+
+		it("defaults maxTurns to 40 when bot.maxTurns is undefined", async () => {
+			const bot = buildBuilderBot(); // no maxTurns set
+			await runner.handleAssignment(buildAssignmentEvent(), buildRepo(), bot);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as { maxTurns?: number };
+			expect(passedConfig.maxTurns).toBe(40);
+		});
+
+		it("respects bot.bypassPermissions=false (no extraArgs flag)", async () => {
+			const bot = buildBuilderBot({ bypassPermissions: false });
+			await runner.handleAssignment(buildAssignmentEvent(), buildRepo(), bot);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as { extraArgs?: Record<string, unknown> };
+			expect(passedConfig.extraArgs).toEqual({});
+		});
+
+		it("defaults bypassPermissions to true (sets the extraArgs flag)", async () => {
+			const bot = buildBuilderBot(); // bypassPermissions undefined
+			await runner.handleAssignment(buildAssignmentEvent(), buildRepo(), bot);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as { extraArgs?: Record<string, unknown> };
+			expect(passedConfig.extraArgs).toEqual({
+				"dangerously-skip-permissions": null,
+			});
+		});
 	});
 
 	describe("handleComment", () => {
 		it("addStreamMessage on the live runner when one exists for the issue", async () => {
 			mocks.fakeRunner.isRunning = vi.fn(() => true);
-			// Inject a live runner for issue-1 without going through handleAssignment.
 			(runner as unknown as { active: Map<string, unknown> }).active.set(
 				ISSUE_ID,
 				mocks.fakeRunner,
@@ -380,25 +460,27 @@ describe("PlaneSessionRunner", () => {
 				buildCommentEvent(),
 				buildRepo(),
 				buildFullIssueRef(),
+				buildBuilderBot(),
 			);
 			expect(mocks.fakeRunner.addStreamMessage).toHaveBeenCalledWith(
 				expect.stringContaining("please also add unit tests"),
 			);
-			// startStreaming should not be called — we used the live runner.
 			expect(mocks.fakeRunner.startStreaming).not.toHaveBeenCalled();
 		});
 
-		it("spawns a new runner with resumeSessionId when no live runner but session id is stored", async () => {
+		it("spawns a new runner with resumeSessionId when stored botUserId matches resolved bot", async () => {
 			await sessionStore.set(ISSUE_ID, {
 				claudeSessionId: "claude-session-prev",
 				projectId: PROJECT_ID,
 				workspaceSlug: "panfleet",
+				botUserId: BUILDER_USER_ID,
 				updatedAt: Date.now(),
 			});
 			await runner.handleComment(
 				buildCommentEvent(),
 				buildRepo(),
 				buildFullIssueRef(),
+				buildBuilderBot(),
 			);
 			expect(mocks.claudeRunnerFactory).toHaveBeenCalledTimes(1);
 			const passedConfig = (
@@ -408,18 +490,89 @@ describe("PlaneSessionRunner", () => {
 			expect(mocks.fakeRunner.startStreaming).toHaveBeenCalled();
 		});
 
+		it("spawns FRESH (no resumeSessionId) when stored botUserId differs from resolved bot", async () => {
+			await sessionStore.set(ISSUE_ID, {
+				claudeSessionId: "claude-session-builder-old",
+				projectId: PROJECT_ID,
+				workspaceSlug: "panfleet",
+				botUserId: BUILDER_USER_ID,
+				updatedAt: Date.now(),
+			});
+			// Resolved bot is now the designer.
+			await runner.handleComment(
+				buildCommentEvent(),
+				buildRepo(),
+				buildFullIssueRef(),
+				buildDesignerBot(),
+			);
+			expect(mocks.claudeRunnerFactory).toHaveBeenCalledTimes(1);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as { resumeSessionId?: string };
+			expect(passedConfig.resumeSessionId).toBeUndefined();
+		});
+
+		it("spawns FRESH when stored entry has no botUserId (legacy entry)", async () => {
+			await sessionStore.set(ISSUE_ID, {
+				claudeSessionId: "claude-session-legacy",
+				projectId: PROJECT_ID,
+				workspaceSlug: "panfleet",
+				updatedAt: Date.now(),
+			});
+			await runner.handleComment(
+				buildCommentEvent(),
+				buildRepo(),
+				buildFullIssueRef(),
+				buildBuilderBot(),
+			);
+			expect(mocks.claudeRunnerFactory).toHaveBeenCalledTimes(1);
+			const passedConfig = (
+				mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>
+			).mock.calls[0]![0] as { resumeSessionId?: string };
+			expect(passedConfig.resumeSessionId).toBeUndefined();
+		});
+
 		it("posts 'reassign to start' and does not spawn when no prior session exists", async () => {
 			await runner.handleComment(
 				buildCommentEvent(),
 				buildRepo(),
 				buildFullIssueRef(),
+				buildBuilderBot(),
 			);
 			expect(mocks.claudeRunnerFactory).not.toHaveBeenCalled();
 			expect(mocks.planeIssueTracker.createComment).toHaveBeenCalledWith(
 				ISSUE_ID,
 				PROJECT_ID,
 				expect.stringMatching(/vuélveme a asignar/i),
+				{ tokenOverride: "plane_api_builder" },
 			);
+		});
+
+		it("recovery comment on worktree failure uses the bot's token", async () => {
+			await sessionStore.set(ISSUE_ID, {
+				claudeSessionId: "claude-session-prev",
+				projectId: PROJECT_ID,
+				workspaceSlug: "panfleet",
+				botUserId: DESIGNER_USER_ID,
+				updatedAt: Date.now(),
+			});
+			(
+				mocks.gitService.createGitWorktree as ReturnType<typeof vi.fn>
+			).mockRejectedValueOnce(new Error("disk full"));
+			await runner.handleComment(
+				buildCommentEvent(),
+				buildRepo(),
+				buildFullIssueRef(),
+				buildDesignerBot(),
+			);
+			const calls = (
+				mocks.planeIssueTracker.createComment as ReturnType<typeof vi.fn>
+			).mock.calls;
+			const errorCall = calls.find((c) =>
+				String(c[2]).includes("No pude reabrir"),
+			);
+			expect(errorCall).toBeDefined();
+			expect(errorCall![3]).toEqual({ tokenOverride: "plane_api_designer" });
 		});
 	});
 });

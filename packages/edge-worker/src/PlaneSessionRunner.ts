@@ -26,6 +26,7 @@ import {
 	createLogger,
 	type ILogger,
 	type Issue,
+	type PlaneBotConfig,
 	type RepositoryConfig,
 	type Workspace,
 } from "cyrus-core";
@@ -88,12 +89,13 @@ export class PlaneSessionRunner {
 	async handleAssignment(
 		event: Extract<PlaneAgentEvent, { type: "issue.assigned_to_bot" }>,
 		repo: RepositoryConfig,
+		bot: PlaneBotConfig,
 	): Promise<void> {
 		const issueId = event.issue.id;
 		const projectId = event.projectId;
 
 		this.logger.info(
-			`Handling Plane assignment for issue ${issueId} → repo '${repo.id}'`,
+			`Handling Plane assignment for issue ${issueId} → repo '${repo.id}' bot='${bot.role}' (${bot.userId})`,
 		);
 
 		// 1. Acknowledge.
@@ -102,6 +104,7 @@ export class PlaneSessionRunner {
 				issueId,
 				projectId,
 				"<p>👋 He recibido la asignación, arrancando…</p>",
+				{ tokenOverride: bot.token },
 			);
 		} catch (err) {
 			this.logger.error(
@@ -122,6 +125,7 @@ export class PlaneSessionRunner {
 				issueId,
 				projectId,
 				`<p>❌ No pude crear el workspace: ${escapeHtml(msg)}</p>`,
+				bot,
 			);
 			return;
 		}
@@ -137,6 +141,7 @@ export class PlaneSessionRunner {
 			projectId,
 			workspace,
 			repo,
+			bot,
 			userPrompt,
 			resumeSessionId: undefined,
 			workspaceSlug: event.workspaceSlug,
@@ -147,6 +152,7 @@ export class PlaneSessionRunner {
 		event: Extract<PlaneAgentEvent, { type: "comment.created_on_bot_issue" }>,
 		repo: RepositoryConfig,
 		fullIssue: PlaneIssueRef,
+		bot: PlaneBotConfig,
 	): Promise<void> {
 		const issueId = event.issueId;
 		const commentText =
@@ -187,13 +193,30 @@ export class PlaneSessionRunner {
 				issueId,
 				resolvedProjectId,
 				"<p>No tengo sesión previa para este issue. Vuélveme a asignar para empezar.</p>",
+				bot,
 			);
 			return;
 		}
 
-		this.logger.info(
-			`Resuming Plane session for issue ${issueId} (claudeSessionId=${stored.claudeSessionId})`,
-		);
+		// Cross-check: only resume if the stored session was owned by the same
+		// bot. If a different bot was assigned mid-life, the system prompt and
+		// tools differ — resuming would carry a misleading conversation. If
+		// the entry is legacy (no botUserId), be conservative: fresh session.
+		const sameBot = stored.botUserId === bot.userId;
+		const resumeSessionId = sameBot ? stored.claudeSessionId : undefined;
+		if (!sameBot && stored.botUserId) {
+			this.logger.warn(
+				`Plane comment on ${issueId}: stored bot ${stored.botUserId} differs from resolved bot ${bot.userId}, starting FRESH session (no resume).`,
+			);
+		} else if (sameBot) {
+			this.logger.info(
+				`Resuming Plane session for issue ${issueId} (claudeSessionId=${stored.claudeSessionId})`,
+			);
+		} else {
+			this.logger.info(
+				`Plane comment on ${issueId}: legacy stored entry without botUserId, starting FRESH session.`,
+			);
+		}
 
 		// 3. Recreate worktree (GitService is idempotent on existing).
 		const shim = buildMinimalIssue(fullIssue);
@@ -209,6 +232,7 @@ export class PlaneSessionRunner {
 				issueId,
 				resolvedProjectId,
 				`<p>❌ No pude reabrir el workspace: ${escapeHtml(msg)}</p>`,
+				bot,
 			);
 			return;
 		}
@@ -218,8 +242,9 @@ export class PlaneSessionRunner {
 			projectId: resolvedProjectId,
 			workspace,
 			repo,
+			bot,
 			userPrompt: promptForRunner,
-			resumeSessionId: stored.claudeSessionId,
+			resumeSessionId,
 			workspaceSlug: stored.workspaceSlug,
 		});
 	}
@@ -252,6 +277,7 @@ export class PlaneSessionRunner {
 		projectId: string;
 		workspace: Workspace;
 		repo: RepositoryConfig;
+		bot: PlaneBotConfig;
 		userPrompt: string;
 		resumeSessionId: string | undefined;
 		workspaceSlug: string;
@@ -261,6 +287,7 @@ export class PlaneSessionRunner {
 			projectId,
 			workspace,
 			repo,
+			bot,
 			userPrompt,
 			resumeSessionId,
 			workspaceSlug,
@@ -268,28 +295,28 @@ export class PlaneSessionRunner {
 
 		const poster = new PlaneClaudeActivityPoster({
 			postComment: (html) =>
-				this.planeIssueTracker.createComment(issueId, projectId, html),
+				this.planeIssueTracker.createComment(issueId, projectId, html, {
+					tokenOverride: bot.token,
+				}),
 			logger: this.logger,
 		});
 
-		const bypassPermissions = repo.planeBypassPermissions ?? true;
+		const bypassPermissions = bot.bypassPermissions ?? true;
 		const extraArgs: Record<string, string | null> = bypassPermissions
 			? { "dangerously-skip-permissions": null }
 			: {};
 
-		const systemPrompt = buildSystemPrompt();
-
 		const runnerHandle = this.claudeRunnerFactory({
 			workingDirectory: workspace.path,
 			cyrusHome: this.cyrusHome,
-			systemPrompt,
+			systemPrompt: bot.systemPrompt,
 			model: repo.model,
 			fallbackModel: repo.fallbackModel,
-			allowedTools: repo.allowedTools,
-			disallowedTools: repo.disallowedTools,
-			maxTurns: repo.planeMaxTurns ?? DEFAULT_MAX_TURNS,
+			allowedTools: bot.allowedTools,
+			disallowedTools: bot.disallowedTools,
+			maxTurns: bot.maxTurns ?? DEFAULT_MAX_TURNS,
 			resumeSessionId,
-			mcpConfigPath: repo.mcpConfigPath,
+			mcpConfigPath: bot.mcpConfigPath,
 			extraArgs,
 		});
 		this.active.set(issueId, runnerHandle);
@@ -316,6 +343,7 @@ export class PlaneSessionRunner {
 				issueId,
 				projectId,
 				workspaceSlug,
+				bot.userId,
 			);
 		} finally {
 			this.active.delete(issueId);
@@ -327,6 +355,7 @@ export class PlaneSessionRunner {
 		issueId: string,
 		projectId: string,
 		workspaceSlug: string,
+		botUserId: string,
 	): Promise<void> {
 		const claudeSessionId = runnerHandle.getSessionInfo?.()?.sessionId;
 		if (!claudeSessionId) {
@@ -340,6 +369,7 @@ export class PlaneSessionRunner {
 				claudeSessionId,
 				projectId,
 				workspaceSlug,
+				botUserId,
 				updatedAt: Date.now(),
 			});
 		} catch (err) {
@@ -353,19 +383,18 @@ export class PlaneSessionRunner {
 		issueId: string,
 		projectId: string,
 		html: string,
+		bot: PlaneBotConfig,
 	): Promise<void> {
 		try {
-			await this.planeIssueTracker.createComment(issueId, projectId, html);
+			await this.planeIssueTracker.createComment(issueId, projectId, html, {
+				tokenOverride: bot.token,
+			});
 		} catch (err) {
 			this.logger.error(
 				`createComment (recovery) failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
 	}
-}
-
-function buildSystemPrompt(): string {
-	return `Eres @builder, un agente que implementa issues asignados. Trabajas en una rama dedicada al issue, haces los cambios pedidos, commiteas y abres un PR contra origin/main. Si el usuario añade un comentario al issue mientras trabajas, considéralo como una nueva instrucción y ajústate a ella en el siguiente turno.`;
 }
 
 function buildMinimalIssue(issue: PlaneIssue | PlaneIssueRef): Issue {

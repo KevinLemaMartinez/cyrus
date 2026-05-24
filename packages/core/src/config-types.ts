@@ -17,6 +17,8 @@ export {
 	migrateEdgeConfig,
 	type NetworkPolicy,
 	NetworkPolicySchema,
+	type PlaneBotConfig,
+	PlaneBotConfigSchema,
 	type RepositoryConfig,
 	type RepositoryConfigPayload,
 	RepositoryConfigPayloadSchema,

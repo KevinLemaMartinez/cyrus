@@ -40,6 +40,7 @@ import type {
 	IssueStateChangeMessage,
 	IssueUnassignedWebhook,
 	IssueUpdateWebhook,
+	PlaneBotConfig,
 	RepositoryConfig,
 	RunnerType,
 	SerializableEdgeWorkerState,
@@ -998,16 +999,12 @@ export class EdgeWorker extends EventEmitter {
 	private registerPlaneEventTransport(): void {
 		const baseUrl = process.env.PLANE_BASE_URL;
 		const workspaceSlug = process.env.PLANE_WORKSPACE_SLUG;
-		const botUserId = process.env.PLANE_BOT_USER_ID;
-		const apiToken = process.env.PLANE_BOT_TOKEN;
 		const webhookSecret = process.env.PLANE_WEBHOOK_SECRET;
 
 		const missing = (
 			[
 				["PLANE_BASE_URL", baseUrl],
 				["PLANE_WORKSPACE_SLUG", workspaceSlug],
-				["PLANE_BOT_USER_ID", botUserId],
-				["PLANE_BOT_TOKEN", apiToken],
 				["PLANE_WEBHOOK_SECRET", webhookSecret],
 			] as Array<[string, string | undefined]>
 		)
@@ -1021,17 +1018,46 @@ export class EdgeWorker extends EventEmitter {
 			return;
 		}
 
+		// Legacy single-bot env vars are no longer read. Warn so operators
+		// notice they need to migrate to per-repo planeBots[].
+		if (process.env.PLANE_BOT_USER_ID || process.env.PLANE_BOT_TOKEN) {
+			this.logger.warn(
+				"Plane transport: PLANE_BOT_USER_ID and PLANE_BOT_TOKEN are ignored. " +
+					"Per-bot identity now lives in RepositoryConfig.planeBots[].",
+			);
+		}
+
+		// Validate cross-repo bot config: every Plane-routed repo must declare
+		// at least one bot, and no userId can appear in more than one repo.
+		const validation = validatePlaneRepos(
+			Array.from(this.repositories.values()),
+		);
+		if (!validation.ok) {
+			for (const e of validation.errors) {
+				this.logger.error(`Plane bot config: ${e}`);
+			}
+			this.logger.error(
+				"Plane transport not registered due to bot config errors above.",
+			);
+			return;
+		}
+		if (validation.botUserIds.length === 0) {
+			this.logger.info(
+				"Plane transport: no repo has planeBots[] configured, skipping",
+			);
+			return;
+		}
+		this.logger.info(`Plane bots loaded: ${validation.botSummary.join(", ")}`);
+
 		const fastifyServer = this.sharedApplicationServer.getFastifyInstance();
-		// NOTE: temporary shim — capa 6 will replace this with bot resolution
-		// from each repo's `planeBots[]`. For now we still bootstrap from env.
 		const planeCfg = {
 			fastifyServer,
 			secret: webhookSecret!,
 			verificationMode: "direct" as const,
 			workspaceSlug: workspaceSlug!,
 			baseUrl: baseUrl!,
-			apiToken: apiToken!,
-			botUserIds: [botUserId!],
+			// No global apiToken — every call carries `tokenOverride: bot.token`.
+			botUserIds: validation.botUserIds,
 		};
 
 		this.planeIssueTracker = new PlaneIssueTrackerService(planeCfg);
@@ -1109,7 +1135,25 @@ export class EdgeWorker extends EventEmitter {
 				);
 				return;
 			}
-			await this.planeSessionRunner.handleAssignment(event, repo);
+			const assigneeIds = event.issue.assignees
+				.map((a) => (typeof a === "string" ? a : a?.id))
+				.filter((v): v is string => typeof v === "string");
+			const { bot, multiple } = resolveBotForAssignees(
+				assigneeIds,
+				repo.planeBots,
+			);
+			if (!bot) {
+				this.logger.info(
+					`Plane assignment on ${event.issue.id} dropped: no configured bot in assignees`,
+				);
+				return;
+			}
+			if (multiple) {
+				this.logger.warn(
+					`Plane assignment on ${event.issue.id}: multiple configured bots are assigned; running role='${bot.role}' (planeBots[0] wins)`,
+				);
+			}
+			await this.planeSessionRunner.handleAssignment(event, repo, bot);
 			return;
 		}
 
@@ -1127,14 +1171,19 @@ export class EdgeWorker extends EventEmitter {
 
 			// The comment webhook doesn't carry projectId. Try each configured
 			// Plane repo's projectId until fetchIssue resolves (404 → next).
+			// Use the first bot's token of each candidate repo for fetchIssue
+			// (any bot in the repo has read access; tracker has no default token).
 			let fullIssue: PlaneIssueRef | null = null;
 			let repoForComment: RepositoryConfig | null = null;
 			for (const r of this.repositories.values()) {
 				if (!r.planeProjectId) continue;
+				const firstBotToken = r.planeBots?.[0]?.token;
+				if (!firstBotToken) continue;
 				try {
 					const candidate = await this.planeIssueTracker.fetchIssue(
 						event.issueId,
 						r.planeProjectId,
+						{ tokenOverride: firstBotToken },
 					);
 					fullIssue = candidate;
 					repoForComment = r;
@@ -1152,17 +1201,36 @@ export class EdgeWorker extends EventEmitter {
 				return;
 			}
 
-			const botUserId = process.env.PLANE_BOT_USER_ID ?? "";
-			if (botUserId && !fullIssue.assignees.includes(botUserId)) {
+			if (!matchesPlaneLabelFilter(fullIssue.labels, repoForComment)) {
 				this.logger.info(
-					`Plane comment on ${event.issueId} dropped: bot not in assignees`,
+					`Plane comment dropped for issue ${event.issueId}: labels do not match planeAgentLabelIds`,
 				);
 				return;
 			}
 
-			if (!matchesPlaneLabelFilter(fullIssue.labels, repoForComment)) {
+			// Resolve bot: prefer the stored botUserId if still in the repo's
+			// planeBots (consistent across runs), else fall back to whoever
+			// is currently in assignees ∩ planeBots.
+			const stored = this.planeSessionStore.get(event.issueId);
+			const storedBot =
+				stored?.botUserId &&
+				repoForComment.planeBots?.find((b) => b.userId === stored.botUserId);
+			let bot = storedBot;
+			if (!bot) {
+				const resolved = resolveBotForAssignees(
+					fullIssue.assignees,
+					repoForComment.planeBots,
+				);
+				if (resolved.multiple) {
+					this.logger.warn(
+						`Plane comment on ${event.issueId}: multiple bots assigned; routing to role='${resolved.bot?.role}'`,
+					);
+				}
+				bot = resolved.bot;
+			}
+			if (!bot) {
 				this.logger.info(
-					`Plane comment dropped for issue ${event.issueId}: labels do not match planeAgentLabelIds`,
+					`Plane comment on ${event.issueId} dropped: no configured bot in assignees and no stored session`,
 				);
 				return;
 			}
@@ -1175,6 +1243,7 @@ export class EdgeWorker extends EventEmitter {
 				eventWithProject,
 				repoForComment,
 				fullIssue,
+				bot,
 			);
 		}
 	}
@@ -7530,4 +7599,62 @@ function matchesPlaneLabelFilter(
 ): boolean {
 	if (!repo.planeAgentLabelIds?.length) return true;
 	return issueLabels.some((id) => repo.planeAgentLabelIds!.includes(id));
+}
+
+/**
+ * Match an issue's assignees against a repo's configured planeBots[].
+ * Returns the first bot whose userId is in assignees; if more than one
+ * matches, sets `multiple=true` so the caller can warn-log.
+ */
+function resolveBotForAssignees(
+	assignees: Array<string | { id?: string } | null | undefined>,
+	planeBots: PlaneBotConfig[] | undefined,
+): { bot: PlaneBotConfig | undefined; multiple: boolean } {
+	if (!planeBots?.length) return { bot: undefined, multiple: false };
+	const ids = assignees
+		.map((a) => (typeof a === "string" ? a : a?.id))
+		.filter((v): v is string => typeof v === "string");
+	const matched = planeBots.filter((b) => ids.includes(b.userId));
+	return { bot: matched[0], multiple: matched.length > 1 };
+}
+
+/**
+ * Validate plane-bot configuration across all repositories:
+ *   - every repo with `planeProjectId` must declare ≥1 bot
+ *   - no `userId` may appear in more than one repo's planeBots
+ * Returns `botUserIds` (the union, in insertion order) and a `botSummary`
+ * useful for startup logging ("builder=<uuid>, designer=<uuid>").
+ */
+function validatePlaneRepos(repos: RepositoryConfig[]): {
+	ok: boolean;
+	errors: string[];
+	botUserIds: string[];
+	botSummary: string[];
+} {
+	const errors: string[] = [];
+	const seen = new Map<string, string>();
+	const botUserIds: string[] = [];
+	const botSummary: string[] = [];
+	for (const repo of repos) {
+		if (!repo.planeProjectId) continue;
+		const bots = repo.planeBots ?? [];
+		if (bots.length === 0) {
+			errors.push(
+				`Repository '${repo.id}' has planeProjectId but no planeBots[]`,
+			);
+			continue;
+		}
+		for (const b of bots) {
+			if (seen.has(b.userId)) {
+				errors.push(
+					`Bot userId ${b.userId} is configured in both '${seen.get(b.userId)}' and '${repo.id}'`,
+				);
+			} else {
+				seen.set(b.userId, repo.id);
+				botUserIds.push(b.userId);
+				botSummary.push(`${b.role}=${b.userId}`);
+			}
+		}
+	}
+	return { ok: errors.length === 0, errors, botUserIds, botSummary };
 }
