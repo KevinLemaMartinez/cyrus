@@ -82,6 +82,44 @@ describe("PlaneSessionStore", () => {
 		expect(reload.get("issue-1")).toBeUndefined();
 	});
 
+	it("set() persists botUserId when provided and reads it back", async () => {
+		const store = new PlaneSessionStore({ storePath });
+		await store.load();
+		await store.set("issue-1", {
+			claudeSessionId: "s1",
+			projectId: "p1",
+			workspaceSlug: "panfleet",
+			botUserId: "3322520e-b959-4cbd-8b7c-929b05e445da",
+			updatedAt: Date.now(),
+		});
+		expect(store.get("issue-1")?.botUserId).toBe(
+			"3322520e-b959-4cbd-8b7c-929b05e445da",
+		);
+
+		const reload = new PlaneSessionStore({ storePath });
+		await reload.load();
+		expect(reload.get("issue-1")?.botUserId).toBe(
+			"3322520e-b959-4cbd-8b7c-929b05e445da",
+		);
+	});
+
+	it("load() tolerates legacy entries without botUserId (treats as undefined)", async () => {
+		const legacy = {
+			"issue-old": {
+				claudeSessionId: "claude-pre-bots",
+				projectId: "p1",
+				workspaceSlug: "panfleet",
+				updatedAt: Date.now(),
+			},
+		};
+		await writeFile(storePath, JSON.stringify(legacy), "utf8");
+		const store = new PlaneSessionStore({ storePath });
+		await store.load();
+		const entry = store.get("issue-old");
+		expect(entry?.claudeSessionId).toBe("claude-pre-bots");
+		expect(entry?.botUserId).toBeUndefined();
+	});
+
 	it("serialises concurrent set() calls without losing data", async () => {
 		const store = new PlaneSessionStore({ storePath });
 		await store.load();

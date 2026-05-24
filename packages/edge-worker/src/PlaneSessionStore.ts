@@ -19,6 +19,13 @@ export interface PlaneStoredSession {
 	claudeSessionId: string;
 	projectId: string;
 	workspaceSlug: string;
+	/**
+	 * UUID of the Plane bot that owned the previous run for this issue.
+	 * Optional so legacy entries (written before multi-bot support) still
+	 * load cleanly; consumers that care must handle `undefined` (treat as
+	 * "unknown bot" and prefer a fresh session over resume).
+	 */
+	botUserId?: string;
 	updatedAt: number;
 }
 
