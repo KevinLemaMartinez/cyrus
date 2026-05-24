@@ -1068,7 +1068,7 @@ export class EdgeWorker extends EventEmitter {
 	private async handlePlaneEvent(event: PlaneAgentEvent): Promise<void> {
 		if (event.type === "comment.created_on_bot_issue") {
 			this.logger.info(
-				`Plane comment event ignored in POC (issue=${event.issue.id})`,
+				`Plane comment event ignored in POC (issue=${event.issueId})`,
 			);
 			return;
 		}

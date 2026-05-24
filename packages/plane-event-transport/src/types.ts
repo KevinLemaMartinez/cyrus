@@ -174,8 +174,13 @@ export type PlaneAgentEvent =
 			actor: PlaneUser;
 	  }
 	| {
+			/**
+			 * The Plane comment webhook does not expand the parent issue —
+			 * only `issue: string` (UUID) is delivered. Consumers must fetch
+			 * the issue separately via PlaneIssueTrackerService.fetchIssue.
+			 */
 			type: "comment.created_on_bot_issue";
-			issue: PlaneIssue;
+			issueId: string;
 			comment: PlaneComment;
 			projectId: string;
 			workspaceSlug: string;
