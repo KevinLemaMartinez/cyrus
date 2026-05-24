@@ -289,6 +289,7 @@ export class PlaneSessionRunner {
 			disallowedTools: repo.disallowedTools,
 			maxTurns: repo.planeMaxTurns ?? DEFAULT_MAX_TURNS,
 			resumeSessionId,
+			mcpConfigPath: repo.mcpConfigPath,
 			extraArgs,
 		});
 		this.active.set(issueId, runnerHandle);

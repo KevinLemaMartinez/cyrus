@@ -349,6 +349,18 @@ describe("PlaneSessionRunner", () => {
 		expect(passedConfig.maxTurns).toBe(7);
 	});
 
+	it("forwards repo.mcpConfigPath to the ClaudeRunner config (Plane MCP wiring)", async () => {
+		await runner.handleAssignment(buildAssignmentEvent(), {
+			...buildRepo(),
+			mcpConfigPath: "/home/cyrus/.cyrus/mcp-configs/plane.json",
+		});
+		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
+			.mock.calls[0]![0] as { mcpConfigPath?: string };
+		expect(passedConfig.mcpConfigPath).toBe(
+			"/home/cyrus/.cyrus/mcp-configs/plane.json",
+		);
+	});
+
 	it("defaults maxTurns to 40 when repo.planeMaxTurns is not set", async () => {
 		await runner.handleAssignment(buildAssignmentEvent(), buildRepo());
 		const passedConfig = (mocks.claudeRunnerFactory as ReturnType<typeof vi.fn>)
