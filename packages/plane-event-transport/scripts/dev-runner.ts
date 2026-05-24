@@ -68,7 +68,7 @@ async function main() {
 		workspaceSlug: requireEnv("PLANE_WORKSPACE_SLUG"),
 		baseUrl: requireEnv("PLANE_BASE_URL"),
 		apiToken: requireEnv("PLANE_BOT_TOKEN"),
-		botUserId: requireEnv("PLANE_BOT_USER_ID"),
+		botUserIds: [requireEnv("PLANE_BOT_USER_ID")],
 	});
 
 	transport.on("event", (e: PlaneAgentEvent) => {

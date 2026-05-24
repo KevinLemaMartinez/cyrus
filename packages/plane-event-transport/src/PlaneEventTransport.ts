@@ -74,7 +74,7 @@ export class PlaneEventTransport extends EventEmitter {
 
 				const envelope = req.body as PlaneWebhookEnvelope;
 				const agentEvent = translatePayload(envelope, {
-					botUserId: this.config.botUserId,
+					botUserIds: this.config.botUserIds,
 					workspaceSlug: this.config.workspaceSlug,
 				});
 

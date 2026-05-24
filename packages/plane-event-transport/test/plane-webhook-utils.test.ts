@@ -64,7 +64,7 @@ describe("real Plane payloads", () => {
 		expect(issue.assignees).toEqual([]);
 		expect(
 			translatePayload(envelope, {
-				botUserId: BOT,
+				botUserIds: [BOT],
 				workspaceSlug: "panfleet",
 			}),
 		).toBeNull();
@@ -81,7 +81,7 @@ describe("real Plane payloads", () => {
 		expect(wasJustAssignedToBot(envelope.activity, BOT)).toBe(true);
 
 		const result = translatePayload(envelope, {
-			botUserId: BOT,
+			botUserIds: [BOT],
 			workspaceSlug: "panfleet",
 		});
 		expect(result).not.toBeNull();
@@ -152,7 +152,7 @@ describe("wasJustAssignedToBot", () => {
 
 describe("translatePayload — issue_comment events", () => {
 	const ctx = {
-		botUserId: BOT,
+		botUserIds: [BOT],
 		workspaceSlug: "panfleet",
 	};
 
@@ -205,6 +205,86 @@ describe("translatePayload — issue_comment events", () => {
 	it("returns null when action is not 'created'", () => {
 		const env = baseEnvelope({ action: "updated" });
 		expect(translatePayload(env, ctx)).toBeNull();
+	});
+});
+
+describe("translatePayload with multiple botUserIds", () => {
+	const BOT_BUILDER = BOT;
+	const BOT_DESIGNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+	it("emits when any of the configured bots is the new assignee", () => {
+		const { envelope } = loadFixture("issue-updated-assigned-to-bot.json");
+		// Fixture has builder as the new assignee; both bots are configured.
+		const result = translatePayload(envelope, {
+			botUserIds: [BOT_DESIGNER, BOT_BUILDER],
+			workspaceSlug: "panfleet",
+		});
+		expect(result).not.toBeNull();
+		expect(result?.type).toBe("issue.assigned_to_bot");
+	});
+
+	it("emits with single-bot configuration via botUserIds (back-compat shape)", () => {
+		const { envelope } = loadFixture("issue-updated-assigned-to-bot.json");
+		const result = translatePayload(envelope, {
+			botUserIds: [BOT_BUILDER],
+			workspaceSlug: "panfleet",
+		});
+		expect(result).not.toBeNull();
+	});
+
+	it("returns null when none of the configured bots is in the new assignees", () => {
+		const { envelope } = loadFixture("issue-updated-assigned-to-bot.json");
+		const result = translatePayload(envelope, {
+			botUserIds: [BOT_DESIGNER, "11111111-1111-4111-8111-111111111111"],
+			workspaceSlug: "panfleet",
+		});
+		expect(result).toBeNull();
+	});
+
+	it("comment anti-loop: drops comments authored by ANY configured bot", () => {
+		const env: PlaneWebhookEnvelope = {
+			event: "issue_comment",
+			action: "created",
+			webhook_id: "wh-1",
+			workspace_id: "ws-1",
+			data: {
+				id: "comment-1",
+				issue: "issue-1",
+				actor: BOT_DESIGNER,
+				comment_html: "<p>self</p>",
+				comment_stripped: "self",
+				created_at: "2026-05-24T10:00:00Z",
+				updated_at: "2026-05-24T10:00:00Z",
+			},
+		};
+		const result = translatePayload(env, {
+			botUserIds: [BOT_BUILDER, BOT_DESIGNER],
+			workspaceSlug: "panfleet",
+		});
+		expect(result).toBeNull();
+	});
+
+	it("comment anti-loop: emits when commenter is not a bot", () => {
+		const env: PlaneWebhookEnvelope = {
+			event: "issue_comment",
+			action: "created",
+			webhook_id: "wh-1",
+			workspace_id: "ws-1",
+			data: {
+				id: "comment-1",
+				issue: "issue-1",
+				actor: OTHER,
+				comment_html: "<p>human</p>",
+				comment_stripped: "human",
+				created_at: "2026-05-24T10:00:00Z",
+				updated_at: "2026-05-24T10:00:00Z",
+			},
+		};
+		const result = translatePayload(env, {
+			botUserIds: [BOT_BUILDER, BOT_DESIGNER],
+			workspaceSlug: "panfleet",
+		});
+		expect(result).not.toBeNull();
 	});
 });
 

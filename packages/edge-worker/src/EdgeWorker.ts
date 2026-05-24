@@ -1022,6 +1022,8 @@ export class EdgeWorker extends EventEmitter {
 		}
 
 		const fastifyServer = this.sharedApplicationServer.getFastifyInstance();
+		// NOTE: temporary shim — capa 6 will replace this with bot resolution
+		// from each repo's `planeBots[]`. For now we still bootstrap from env.
 		const planeCfg = {
 			fastifyServer,
 			secret: webhookSecret!,
@@ -1029,7 +1031,7 @@ export class EdgeWorker extends EventEmitter {
 			workspaceSlug: workspaceSlug!,
 			baseUrl: baseUrl!,
 			apiToken: apiToken!,
-			botUserId: botUserId!,
+			botUserIds: [botUserId!],
 		};
 
 		this.planeIssueTracker = new PlaneIssueTrackerService(planeCfg);

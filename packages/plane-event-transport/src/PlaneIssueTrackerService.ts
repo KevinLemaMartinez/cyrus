@@ -46,27 +46,44 @@ export interface IssueUpdateInput {
 	labels?: string[];
 }
 
+/**
+ * Optional per-call override. When `tokenOverride` is set, that token is used
+ * as the `X-API-Key` header for that single request, regardless of whether
+ * the service was constructed with a default token. This is how multi-bot
+ * setups attribute each Plane action to the correct bot identity.
+ */
+export interface PlaneRequestOpts {
+	tokenOverride?: string;
+}
+
 export class PlaneIssueTrackerService {
 	private readonly baseUrl: string;
 	private readonly workspaceSlug: string;
-	private readonly token: string;
+	private readonly defaultToken: string | undefined;
 
 	constructor(config: PlaneEventTransportConfig) {
 		this.baseUrl = config.baseUrl.replace(/\/$/, "");
 		this.workspaceSlug = config.workspaceSlug;
-		this.token = config.apiToken;
+		this.defaultToken = config.apiToken || undefined;
 	}
 
 	private async http<T>(
 		method: "GET" | "POST" | "PATCH" | "DELETE",
 		path: string,
 		body?: unknown,
+		opts?: PlaneRequestOpts,
 	): Promise<T> {
+		const token = opts?.tokenOverride ?? this.defaultToken;
+		if (!token) {
+			throw new Error(
+				`PlaneIssueTrackerService: no token available for ${method} ${path} (constructor token undefined and no tokenOverride passed)`,
+			);
+		}
 		const url = `${this.baseUrl}${path}`;
 		const res = await fetch(url, {
 			method,
 			headers: {
-				"X-API-Key": this.token,
+				"X-API-Key": token,
 				"Content-Type": "application/json",
 			},
 			body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -105,11 +122,15 @@ export class PlaneIssueTrackerService {
 		};
 	}
 
-	async fetchCurrentUser(): Promise<PlaneUser> {
-		return this.http<PlaneUser>("GET", "/api/v1/users/me/");
+	async fetchCurrentUser(opts?: PlaneRequestOpts): Promise<PlaneUser> {
+		return this.http<PlaneUser>("GET", "/api/v1/users/me/", undefined, opts);
 	}
 
-	async fetchIssue(issueId: string, projectId: string): Promise<PlaneIssueRef> {
+	async fetchIssue(
+		issueId: string,
+		projectId: string,
+		opts?: PlaneRequestOpts,
+	): Promise<PlaneIssueRef> {
 		if (!isUuid(issueId) || !isUuid(projectId)) {
 			throw new Error(
 				`fetchIssue requires UUIDs (got issueId='${issueId}', projectId='${projectId}')`,
@@ -118,17 +139,21 @@ export class PlaneIssueTrackerService {
 		return this.http<PlaneIssueRef>(
 			"GET",
 			this.projectPath(projectId, `/issues/${issueId}/`),
+			undefined,
+			opts,
 		);
 	}
 
 	async createIssue(
 		projectId: string,
 		input: IssueCreateInput,
+		opts?: PlaneRequestOpts,
 	): Promise<PlaneIssueRef> {
 		return this.http<PlaneIssueRef>(
 			"POST",
 			this.projectPath(projectId, `/issues/`),
 			input,
+			opts,
 		);
 	}
 
@@ -136,11 +161,13 @@ export class PlaneIssueTrackerService {
 		issueId: string,
 		projectId: string,
 		updates: IssueUpdateInput,
+		opts?: PlaneRequestOpts,
 	): Promise<PlaneIssueRef> {
 		return this.http<PlaneIssueRef>(
 			"PATCH",
 			this.projectPath(projectId, `/issues/${issueId}/`),
 			updates,
+			opts,
 		);
 	}
 
@@ -148,11 +175,13 @@ export class PlaneIssueTrackerService {
 		issueId: string,
 		projectId: string,
 		commentHtml: string,
+		opts?: PlaneRequestOpts,
 	): Promise<PlaneComment> {
 		return this.http<PlaneComment>(
 			"POST",
 			this.projectPath(projectId, `/issues/${issueId}/comments/`),
 			{ comment_html: commentHtml },
+			opts,
 		);
 	}
 

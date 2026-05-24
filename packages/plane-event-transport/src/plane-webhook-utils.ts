@@ -95,15 +95,16 @@ export function wasJustAssignedToBot(
  */
 export function translatePayload(
 	env: PlaneWebhookEnvelope,
-	ctx: { botUserId: string; workspaceSlug: string },
+	ctx: { botUserIds: string[]; workspaceSlug: string },
 ): PlaneAgentEvent | null {
 	if (isIssueEnvelope(env)) {
 		const issue = env.data;
 		const isCreatedWithBot =
-			env.action === "created" && isAssignedToBot(issue, ctx.botUserId);
+			env.action === "created" &&
+			ctx.botUserIds.some((id) => isAssignedToBot(issue, id));
 		const isJustAssigned =
 			env.action === "updated" &&
-			wasJustAssignedToBot(env.activity, ctx.botUserId);
+			ctx.botUserIds.some((id) => wasJustAssignedToBot(env.activity, id));
 		if (!isCreatedWithBot && !isJustAssigned) return null;
 		return {
 			type: "issue.assigned_to_bot",
@@ -116,8 +117,8 @@ export function translatePayload(
 	if (isCommentEnvelope(env)) {
 		if (env.action !== "created") return null;
 		const comment = env.data;
-		// Anti-loop: ignore comments authored by the bot itself.
-		if (comment.actor === ctx.botUserId) return null;
+		// Anti-loop: ignore comments authored by any configured bot.
+		if (comment.actor && ctx.botUserIds.includes(comment.actor)) return null;
 		// The "bot is assigned to the parent issue" check is intentionally
 		// deferred to handlePlaneEvent — the webhook does not expand the
 		// issue, so we'd need a REST fetch here. We don't want the translator

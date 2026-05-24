@@ -11,8 +11,10 @@ const CONFIG: PlaneEventTransportConfig = {
 	workspaceSlug: "panfleet",
 	baseUrl: "https://plane.pulp.lan/",
 	apiToken: "plane_api_test",
-	botUserId: "3322520e-b959-4cbd-8b7c-929b05e445da",
+	botUserIds: ["3322520e-b959-4cbd-8b7c-929b05e445da"],
 };
+
+const BOT_USER_ID = CONFIG.botUserIds[0];
 
 const PROJ = "35502ab9-d5b6-4397-9917-732a69eb9dd4";
 const ISSUE = "a0f19eec-e6fd-414b-b5a0-57f14e13f043";
@@ -66,7 +68,7 @@ describe("PlaneIssueTrackerService", () => {
 			ok: true,
 			status: 200,
 			body: JSON.stringify({
-				id: CONFIG.botUserId,
+				id: BOT_USER_ID,
 				email: "builder@bot.pulp.lan",
 				first_name: "",
 				last_name: "",
@@ -166,5 +168,83 @@ describe("PlaneIssueTrackerService", () => {
 	it("stub methods throw 'Not implemented in POC'", () => {
 		expect(() => svc.fetchTeams()).toThrow(/Not implemented in POC/);
 		expect(() => svc.createAgentActivity()).toThrow(/Not implemented in POC/);
+	});
+
+	describe("tokenOverride", () => {
+		it("createComment uses tokenOverride when provided", async () => {
+			m.respondWith({
+				ok: true,
+				status: 201,
+				body: JSON.stringify({ id: "c-1" }),
+			});
+			await svc.createComment(ISSUE, PROJ, "<p>by designer</p>", {
+				tokenOverride: "plane_api_designer",
+			});
+			expect(
+				(m.calls[0].init.headers as Record<string, string>)["X-API-Key"],
+			).toBe("plane_api_designer");
+		});
+
+		it("createComment falls back to constructor token without override", async () => {
+			m.respondWith({
+				ok: true,
+				status: 201,
+				body: JSON.stringify({ id: "c-1" }),
+			});
+			await svc.createComment(ISSUE, PROJ, "<p>default</p>");
+			expect(
+				(m.calls[0].init.headers as Record<string, string>)["X-API-Key"],
+			).toBe("plane_api_test");
+		});
+
+		it("fetchIssue accepts a tokenOverride", async () => {
+			m.respondWith({
+				ok: true,
+				status: 200,
+				body: JSON.stringify({ id: ISSUE }),
+			});
+			await svc.fetchIssue(ISSUE, PROJ, { tokenOverride: "plane_api_other" });
+			expect(
+				(m.calls[0].init.headers as Record<string, string>)["X-API-Key"],
+			).toBe("plane_api_other");
+		});
+	});
+
+	describe("constructor without apiToken", () => {
+		it("instantiates with apiToken undefined", () => {
+			const noTokenSvc = new PlaneIssueTrackerService({
+				...CONFIG,
+				apiToken: undefined as unknown as string,
+			});
+			expect(noTokenSvc.getPlatformType()).toBe("plane");
+		});
+
+		it("createComment without constructor token and without override throws clear error", async () => {
+			const noTokenSvc = new PlaneIssueTrackerService({
+				...CONFIG,
+				apiToken: undefined as unknown as string,
+			});
+			await expect(
+				noTokenSvc.createComment(ISSUE, PROJ, "<p>x</p>"),
+			).rejects.toThrow(/token/i);
+		});
+
+		it("createComment without constructor token but WITH override succeeds", async () => {
+			const noTokenSvc = new PlaneIssueTrackerService({
+				...CONFIG,
+				apiToken: undefined as unknown as string,
+			});
+			m.respondWith({
+				ok: true,
+				status: 201,
+				body: JSON.stringify({ id: "c-1" }),
+			});
+			await noTokenSvc.createComment(ISSUE, PROJ, "<p>x</p>", {
+				tokenOverride: "plane_api_per_call",
+			});
+			expect(
+				(m.calls[0].init.headers as Record<string, string>)["X-API-Key"],
+			).toBe("plane_api_per_call");
+		});
 	});
 });

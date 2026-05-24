@@ -50,7 +50,7 @@ function buildConfig(
 		workspaceSlug: "panfleet",
 		baseUrl: "https://plane.pulp.lan",
 		apiToken: "plane_api_test",
-		botUserId: BOT,
+		botUserIds: [BOT],
 	};
 }
 

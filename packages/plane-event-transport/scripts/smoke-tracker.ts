@@ -53,8 +53,9 @@ const config: PlaneEventTransportConfig = {
 	workspaceSlug: requireEnv("PLANE_WORKSPACE_SLUG"),
 	baseUrl: requireEnv("PLANE_BASE_URL"),
 	apiToken: requireEnv("PLANE_BOT_TOKEN"),
-	botUserId: requireEnv("PLANE_BOT_USER_ID"),
+	botUserIds: [requireEnv("PLANE_BOT_USER_ID")],
 };
+const expectedBotId = config.botUserIds[0];
 
 async function main() {
 	const svc = new PlaneIssueTrackerService(config);
@@ -76,9 +77,9 @@ async function main() {
 	log("id", me.id);
 	log("email", me.email);
 	log("display_name", me.display_name);
-	if (me.id !== config.botUserId) {
+	if (me.id !== expectedBotId) {
 		console.warn(
-			`  ⚠ /users/me/ returned id=${me.id}, expected ${config.botUserId}`,
+			`  ⚠ /users/me/ returned id=${me.id}, expected ${expectedBotId}`,
 		);
 	}
 

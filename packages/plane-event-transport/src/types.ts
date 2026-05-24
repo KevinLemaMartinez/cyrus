@@ -36,10 +36,18 @@ export interface PlaneEventTransportConfig {
 	workspaceSlug: string;
 	/** Base URL of the Plane instance, e.g. "https://plane.pulp.lan". */
 	baseUrl: string;
-	/** API token of the bot user that the runner impersonates. */
-	apiToken: string;
-	/** UUID of the bot user (used to detect "assigned-to-bot" events). */
-	botUserId: string;
+	/**
+	 * Optional default API token used by `PlaneIssueTrackerService` when no
+	 * per-call `tokenOverride` is provided. In multi-bot deployments leave
+	 * undefined and let each caller pass `tokenOverride: bot.token`.
+	 */
+	apiToken?: string;
+	/**
+	 * UUIDs of all bot users this transport must recognize. Used by
+	 * `translatePayload` to (1) detect "assigned-to-bot" events for any of
+	 * the bots and (2) drop comments authored by any of them (anti-loop).
+	 */
+	botUserIds: string[];
 }
 
 /**
