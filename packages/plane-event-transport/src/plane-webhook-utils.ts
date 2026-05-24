@@ -114,9 +114,25 @@ export function translatePayload(
 		};
 	}
 	if (isCommentEnvelope(env)) {
-		// POC+1: only emit if the parent issue has the bot in assignees, and
-		// the comment is not authored by the bot itself (avoid loops).
-		return null;
+		if (env.action !== "created") return null;
+		const comment = env.data;
+		// Anti-loop: ignore comments authored by the bot itself.
+		if (comment.actor === ctx.botUserId) return null;
+		// The "bot is assigned to the parent issue" check is intentionally
+		// deferred to handlePlaneEvent — the webhook does not expand the
+		// issue, so we'd need a REST fetch here. We don't want the translator
+		// to do I/O.
+		return {
+			type: "comment.created_on_bot_issue",
+			issueId: comment.issue,
+			comment,
+			// Plane's comment webhook does not include a projectId in the
+			// envelope. Consumers must resolve project via fetchIssue when
+			// they need it.
+			projectId: "",
+			workspaceSlug: ctx.workspaceSlug,
+			actor: syntheticActor(comment.actor),
+		};
 	}
 	return null;
 }

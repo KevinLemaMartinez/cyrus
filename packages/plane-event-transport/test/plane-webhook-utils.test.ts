@@ -150,6 +150,64 @@ describe("wasJustAssignedToBot", () => {
 	});
 });
 
+describe("translatePayload — issue_comment events", () => {
+	const ctx = {
+		botUserId: BOT,
+		workspaceSlug: "panfleet",
+	};
+
+	const baseEnvelope = (
+		overrides: Partial<PlaneWebhookEnvelope<unknown>> = {},
+	): PlaneWebhookEnvelope => ({
+		event: "issue_comment",
+		action: "created",
+		webhook_id: "wh-1",
+		workspace_id: "ws-1",
+		data: {
+			id: "comment-1",
+			issue: "issue-1",
+			actor: OTHER,
+			comment_html: "<p>hello</p>",
+			comment_stripped: "hello",
+			created_at: "2026-05-24T10:00:00Z",
+			updated_at: "2026-05-24T10:00:00Z",
+		},
+		...overrides,
+	});
+
+	it("emits comment.created_on_bot_issue when a non-bot user posts a comment", () => {
+		const env = baseEnvelope();
+		const result = translatePayload(env, ctx);
+		expect(result).not.toBeNull();
+		expect(result?.type).toBe("comment.created_on_bot_issue");
+		if (result?.type !== "comment.created_on_bot_issue") return;
+		expect(result.issueId).toBe("issue-1");
+		expect(result.comment.id).toBe("comment-1");
+		expect(result.workspaceSlug).toBe("panfleet");
+		expect(result.actor.id).toBe(OTHER);
+	});
+
+	it("returns null when the comment author is the bot (anti-loop)", () => {
+		const env = baseEnvelope({
+			data: {
+				id: "comment-1",
+				issue: "issue-1",
+				actor: BOT,
+				comment_html: "<p>self</p>",
+				comment_stripped: "self",
+				created_at: "2026-05-24T10:00:00Z",
+				updated_at: "2026-05-24T10:00:00Z",
+			},
+		});
+		expect(translatePayload(env, ctx)).toBeNull();
+	});
+
+	it("returns null when action is not 'created'", () => {
+		const env = baseEnvelope({ action: "updated" });
+		expect(translatePayload(env, ctx)).toBeNull();
+	});
+});
+
 function stubActor() {
 	return {
 		id: "stub",
